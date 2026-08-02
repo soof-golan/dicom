@@ -228,14 +228,18 @@ export default function SegmentOverlay() {
     };
   };
 
+  /** Where a pointer sits inside the pane that the drag started in. */
+  const trackBand = (band: Band, event: React.PointerEvent<HTMLDivElement>): void => {
+    const rect = hostRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    band.x = event.clientX - rect.left - band.pane.view.x;
+    band.y = event.clientY - rect.top - band.pane.view.y;
+  };
+
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const band = bandRef.current;
     if (!band) return;
-    const host = hostRef.current;
-    if (!host) return;
-    const rect = host.getBoundingClientRect();
-    band.x = event.clientX - rect.left - band.pane.view.x;
-    band.y = event.clientY - rect.top - band.pane.view.y;
+    trackBand(band, event);
     redraw((tick) => tick + 1);
   };
 
@@ -244,6 +248,9 @@ export default function SegmentOverlay() {
     bandRef.current = undefined;
     event.currentTarget.releasePointerCapture(event.pointerId);
     if (!band || !series || band.pane.id === "volume") return;
+    // Read the end from this event, not from the last move. A fast drag can
+    // release without a single move in between, and that box would be empty.
+    trackBand(band, event);
     redraw((tick) => tick + 1);
 
     const plane = standardPlane(series.volume, band.pane.id, view.cursor, view.pan[band.pane.id]);

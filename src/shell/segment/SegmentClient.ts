@@ -83,10 +83,14 @@ export class SegmentClient {
     return this.#nextId;
   }
 
-  /** Download and compile. Returns true when the text model came up too. */
-  async load(plan: ModelPlan, text: TextPlan | undefined): Promise<boolean> {
+  /** Download and compile. Reports whether the text model came up too. */
+  async load(
+    plan: ModelPlan,
+    text: TextPlan | undefined,
+  ): Promise<{ textReady: boolean; textError: string | undefined }> {
     const reply = await this.#send({ kind: "load", id: this.#id(), plan, text });
-    return reply.kind === "loaded" ? reply.textReady : false;
+    if (reply.kind !== "loaded") return { textReady: false, textError: undefined };
+    return { textReady: reply.textReady, textError: reply.textError };
   }
 
   /** Run the vision encoder for one cut. Seconds. */

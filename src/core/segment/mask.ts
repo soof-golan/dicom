@@ -61,6 +61,38 @@ export function decodeRle(rle: RleMask): Mask {
   return mask;
 }
 
+/**
+ * Turn a heat map into a mask, at a share of its own peak.
+ *
+ * A text model returns a score per pixel, not a mask. A fixed cut-off does not
+ * work across phrases: on an MR slice one phrase peaks at 0.96 and the next at
+ * 0.34, and a fixed 0.5 would keep everything or nothing. Cutting at a share
+ * of the peak keeps the shape of the answer whatever its strength.
+ *
+ * `share` runs from 0 to 1. A mask of all zeros comes back when the peak is
+ * not above zero.
+ */
+export function thresholdHeatmap(
+  values: ArrayLike<number>,
+  width: number,
+  height: number,
+  share: number,
+): Mask {
+  const mask = emptyMask(width, height);
+  let peak = 0;
+  for (let i = 0; i < values.length; i += 1) {
+    const value = values[i]!;
+    if (value > peak) peak = value;
+  }
+  if (peak <= 0) return mask;
+
+  const cut = peak * share;
+  for (let i = 0; i < mask.data.length; i += 1) {
+    mask.data[i] = (values[i] ?? 0) >= cut ? 1 : 0;
+  }
+  return mask;
+}
+
 /** How many pixels are set. */
 export function maskArea(mask: Mask): number {
   let total = 0;

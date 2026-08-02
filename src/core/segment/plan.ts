@@ -97,18 +97,29 @@ const SLIMSAM: ModelPlan = {
 /**
  * The text model.
  *
- * OWLv2 finds boxes from a phrase. SAM turns a box into a mask. Chaining the
- * two is the standard "grounded SAM" pattern, and it is the only text route
- * with published, ungated ONNX weights that transformers.js can load.
+ * CLIPSeg takes a phrase and returns a 352x352 heat map over the picture. The
+ * hot region becomes a box, and the box goes into SAM, which draws the edge.
+ * SAM gives a much sharper boundary than a threshold over the heat map.
  *
- * `onnx/model_q4f16.onnx` is 128,434,817 bytes. The tokenizer adds 3.6 MB.
+ * The OWL detectors were the first choice, because a detector composes with a
+ * box prompt. They do not load. Every OWLv2 and OWL-ViT export stops at the
+ * same node:
+ *
+ *     Could not find an implementation for Cast(13) node with name
+ *     '/class_head/Cast'
+ *
+ * Measured on 2026-08-02 against onnxruntime-web 1.26, over both repos, four
+ * weight formats (`q4`, `q8`, `q4f16`, `fp16`) and both providers. CLIPSeg has
+ * no detection head, so it has no such node.
+ *
+ * `onnx/model_q4f16.onnx` is 115,520,184 bytes. The tokenizer adds 3.6 MB.
  */
-const OWLV2: TextPlan = {
-  repo: "Xenova/owlv2-base-patch16-ensemble",
+const CLIPSEG: TextPlan = {
+  repo: "Xenova/clipseg-rd64-refined",
   backend: "webgpu",
   dtype: "q4f16",
-  bytes: 132_046_418,
-  label: "OWLv2 base",
+  bytes: 119_133_630,
+  label: "CLIPSeg rd64",
 };
 
 /**
@@ -128,7 +139,7 @@ export function planFor(capability: Capability): ModelPlan | undefined {
 /** The text model for a plan, or nothing when the backend cannot carry it. */
 export function textPlanFor(plan: ModelPlan | undefined): TextPlan | undefined {
   if (!plan || plan.backend !== "webgpu") return undefined;
-  return OWLV2;
+  return CLIPSEG;
 }
 
 /** Bytes as a short string, for a button that must state the real cost. */

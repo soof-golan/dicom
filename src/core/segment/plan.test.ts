@@ -65,8 +65,16 @@ describe("planFor", () => {
 });
 
 describe("textPlanFor", () => {
-  it("offers OWLv2 on the WebGPU path", () => {
-    expect(textPlanFor(planFor(DESKTOP_GPU))?.repo).toBe("Xenova/owlv2-base-patch16-ensemble");
+  it("offers CLIPSeg on the WebGPU path", () => {
+    // The OWL detectors were the first choice. No export of either one loads:
+    // they all stop at Cast(13) in the class head. CLIPSeg has no such head.
+    expect(textPlanFor(planFor(DESKTOP_GPU))?.repo).toBe("Xenova/clipseg-rd64-refined");
+    expect(textPlanFor(planFor(DESKTOP_GPU))?.backend).toBe("webgpu");
+  });
+
+  it("keeps the text model far smaller than the mask model", () => {
+    const plan = planFor(DESKTOP_GPU)!;
+    expect(textPlanFor(plan)!.bytes).toBeLessThan(plan.bytes / 2);
   });
 
   it("offers nothing on the WebAssembly path, where it would take minutes", () => {

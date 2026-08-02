@@ -9,6 +9,7 @@ import {
   maskBounds,
   maskCentroid,
   subtractMask,
+  thresholdHeatmap,
   unionMask,
 } from "./mask.ts";
 import type { Mask } from "./types.ts";
@@ -68,6 +69,52 @@ describe("run length encoding", () => {
     mask.data.fill(1, 100 * 256, 140 * 256);
     expect(encodeRle(mask).runs.length).toBe(3);
     expect(mask.data.length).toBe(65_536);
+  });
+});
+
+describe("thresholdHeatmap", () => {
+  it("keeps the pixels at or above a share of the peak", () => {
+    const values = Float32Array.from([0, 0.2, 0.5, 1]);
+    expect([...thresholdHeatmap(values, 4, 1, 0.5).data]).toEqual([0, 0, 1, 1]);
+  });
+
+  it("measures the share against the peak, not against one", () => {
+    // A weak answer keeps its shape. This is the case that a fixed cut-off
+    // gets wrong: a phrase that peaks at 0.34 would return nothing.
+    const strong = Float32Array.from([0.1, 0.5, 0.9]);
+    const weak = Float32Array.from([0.034, 0.17, 0.306]);
+    expect([...thresholdHeatmap(weak, 3, 1, 0.5).data]).toEqual([
+      ...thresholdHeatmap(strong, 3, 1, 0.5).data,
+    ]);
+  });
+
+  it("keeps only the peak at a share of one", () => {
+    expect([...thresholdHeatmap(Float32Array.from([0.4, 0.9, 0.6]), 3, 1, 1).data]).toEqual([
+      0, 1, 0,
+    ]);
+  });
+
+  it("keeps every pixel above zero at a share of zero", () => {
+    expect([...thresholdHeatmap(Float32Array.from([0, 0.1, 0.9]), 3, 1, 0).data]).toEqual([
+      1, 1, 1,
+    ]);
+  });
+
+  it("returns an empty mask when nothing scores above zero", () => {
+    expect([...thresholdHeatmap(Float32Array.from([0, 0, 0]), 3, 1, 0.5).data]).toEqual([0, 0, 0]);
+  });
+
+  it("gives a box that a box prompt can use", () => {
+    const values = new Float32Array(16);
+    values[5] = 0.8;
+    values[6] = 0.9;
+    values[9] = 0.7;
+    expect(maskBounds(thresholdHeatmap(values, 4, 4, 0.6))).toEqual({
+      x0: 1,
+      y0: 1,
+      x1: 3,
+      y1: 3,
+    });
   });
 });
 

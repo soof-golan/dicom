@@ -10,6 +10,7 @@
  * `@huggingface/transformers` is imported here, and only behind `await
  * import()`. Nothing about segmentation may reach the first page load.
  */
+import { maskBounds, thresholdHeatmap } from "../../core/segment/mask.ts";
 import type { DetectedBox, FromWorker, ToWorker } from "./protocol.ts";
 import type { ModelPlan, TextPlan } from "../../core/segment/plan.ts";
 import type { BoxPrompt, PointPrompt } from "../../core/segment/types.ts";
@@ -32,9 +33,17 @@ interface Encoded {
   readonly height: number;
 }
 
+interface ClipsegHandle {
+  readonly model: Awaited<
+    ReturnType<Transformers["CLIPSegForImageSegmentation"]["from_pretrained"]>
+  >;
+  readonly processor: Awaited<ReturnType<Transformers["AutoProcessor"]["from_pretrained"]>>;
+  readonly tokenizer: Awaited<ReturnType<Transformers["AutoTokenizer"]["from_pretrained"]>>;
+}
+
 let runtime: Runtime | undefined;
 let sam: SamHandle | undefined;
-let detect: ((image: unknown, labels: string[]) => Promise<unknown>) | undefined;
+let clipseg: ClipsegHandle | undefined;
 let encoded: Encoded | undefined;
 
 function post(message: FromWorker, transfer: Transferable[] = []): void {
@@ -73,9 +82,12 @@ function reportProgress(files: Map<string, { loaded: number; total: number }>) {
   };
 }
 
-async function load(plan: ModelPlan, text: TextPlan | undefined): Promise<boolean> {
+async function load(
+  plan: ModelPlan,
+  text: TextPlan | undefined,
+): Promise<{ textReady: boolean; textError: string | undefined }> {
   runtime ??= await loadRuntime();
-  const { AutoModel, AutoProcessor, pipeline } = runtime;
+  const { AutoModel, AutoProcessor, AutoTokenizer, CLIPSegForImageSegmentation } = runtime;
   const progress_callback = reportProgress(new Map());
 
   const model = await AutoModel.from_pretrained(plan.repo, {
@@ -86,20 +98,24 @@ async function load(plan: ModelPlan, text: TextPlan | undefined): Promise<boolea
   const processor = await AutoProcessor.from_pretrained(plan.repo, { progress_callback });
   sam = { model, processor, needsPoint: plan.id === "slimsam-77" };
 
-  if (!text) return false;
+  if (!text) return { textReady: false, textError: undefined };
   // The text model is a separate download. A failure here must not take the
-  // click and box path down with it.
+  // click and box path down with it, but the reason must reach the panel.
   try {
-    const found = await pipeline("zero-shot-object-detection", text.repo, {
-      dtype: text.dtype,
-      device: text.backend,
-      progress_callback,
-    });
-    detect = (image, labels) => found(image as never, labels, { threshold: 0.02, top_k: 8 });
-    return true;
-  } catch {
-    detect = undefined;
-    return false;
+    const [model, processor, tokenizer] = await Promise.all([
+      CLIPSegForImageSegmentation.from_pretrained(text.repo, {
+        dtype: text.dtype,
+        device: text.backend,
+        progress_callback,
+      }),
+      AutoProcessor.from_pretrained(text.repo, { progress_callback }),
+      AutoTokenizer.from_pretrained(text.repo, { progress_callback }),
+    ]);
+    clipseg = { model, processor, tokenizer };
+    return { textReady: true, textError: undefined };
+  } catch (error) {
+    clipseg = undefined;
+    return { textReady: false, textError: messageOf(error) };
   }
 }
 
@@ -200,15 +216,21 @@ async function decode(
   return { width, height, data, score: scores[best] ?? 0 };
 }
 
+/** Keep the pixels of the heat map at 60% of its own peak, or more. */
+const HOT_SHARE = 0.6;
+
 /**
- * Find boxes for a phrase.
+ * Find a box for a phrase.
  *
- * OWLv2 pads a picture to a square before it looks at it, and it reports boxes
- * in the padded space. Padding here first, with the same bottom-right rule,
- * keeps the numbers in the coordinates of the cut.
+ * CLIPSeg resizes the picture to a square 352 by 352 and returns one score per
+ * pixel of that square. Padding the cut to a square first makes the way back a
+ * single scale factor, with no aspect correction to get wrong.
+ *
+ * Exactly one phrase goes in per run. The export ties the text batch to the
+ * image batch, and two phrases against one picture stop with a shape mismatch.
  */
 async function detectBoxes(text: string): Promise<readonly DetectedBox[]> {
-  if (!detect || !runtime || !encoded) throw new Error("the text model is not loaded");
+  if (!clipseg || !runtime || !encoded) throw new Error("the text model is not loaded");
   const side = Math.max(encoded.width, encoded.height);
   const square = new Uint8ClampedArray(side * side * 3);
   const source = encoded.image.data;
@@ -218,19 +240,38 @@ async function detectBoxes(text: string): Promise<readonly DetectedBox[]> {
   }
   const padded = new runtime.RawImage(square, side, side, 3);
 
-  const found = (await detect(padded, [text])) as {
-    score: number;
-    box: { xmin: number; ymin: number; xmax: number; ymax: number };
-  }[];
-  return found
-    .map(({ score, box }) => ({
-      x0: Math.max(0, Math.min(box.xmin, encoded!.width)),
-      y0: Math.max(0, Math.min(box.ymin, encoded!.height)),
-      x1: Math.max(0, Math.min(box.xmax, encoded!.width)),
-      y1: Math.max(0, Math.min(box.ymax, encoded!.height)),
-      score,
-    }))
-    .filter((box) => box.x1 - box.x0 >= 2 && box.y1 - box.y0 >= 2);
+  const { model, processor, tokenizer } = clipseg;
+  const textInputs = tokenizer([text], { padding: true, truncation: true });
+  const imageInputs = await processor(padded);
+  const output = (await (model as unknown as (input: unknown) => Promise<Record<string, unknown>>)({
+    ...textInputs,
+    ...imageInputs,
+  })) as { logits: { dims: number[]; data: Float32Array } };
+
+  const heat = output.logits;
+  const heatWidth = heat.dims[heat.dims.length - 1]!;
+  const heatHeight = heat.dims[heat.dims.length - 2]!;
+  const scores = new Float32Array(heatWidth * heatHeight);
+  let peak = 0;
+  for (let i = 0; i < scores.length; i += 1) {
+    // The head returns logits. A sigmoid turns them into 0 to 1.
+    const value = 1 / (1 + Math.exp(-heat.data[i]!));
+    scores[i] = value;
+    if (value > peak) peak = value;
+  }
+
+  const bounds = maskBounds(thresholdHeatmap(scores, heatWidth, heatHeight, HOT_SHARE));
+  if (!bounds) return [];
+
+  const scale = side / heatWidth;
+  const box = {
+    x0: Math.max(0, Math.min(bounds.x0 * scale, encoded.width)),
+    y0: Math.max(0, Math.min(bounds.y0 * scale, encoded.height)),
+    x1: Math.max(0, Math.min(bounds.x1 * scale, encoded.width)),
+    y1: Math.max(0, Math.min(bounds.y1 * scale, encoded.height)),
+    score: peak,
+  };
+  return box.x1 - box.x0 >= 2 && box.y1 - box.y0 >= 2 ? [box] : [];
 }
 
 function messageOf(error: unknown): string {
@@ -251,8 +292,8 @@ addEventListener("message", (event: MessageEvent<ToWorker>) => {
             fraction: 0,
             file: undefined,
           });
-          const textReady = await load(request.plan, request.text);
-          post({ kind: "loaded", id: request.id, textReady });
+          const text = await load(request.plan, request.text);
+          post({ kind: "loaded", id: request.id, ...text });
           return;
         }
         case "encode": {
@@ -288,8 +329,8 @@ addEventListener("message", (event: MessageEvent<ToWorker>) => {
         case "dispose": {
           encoded = undefined;
           sam = undefined;
-          detect = undefined;
-          post({ kind: "loaded", id: request.id, textReady: false });
+          clipseg = undefined;
+          post({ kind: "loaded", id: request.id, textReady: false, textError: undefined });
           return;
         }
       }

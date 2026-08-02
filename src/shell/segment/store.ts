@@ -228,7 +228,7 @@ export const useSegment = create<SegmentStore>((set, get) => {
 
       try {
         const handle = await ensureClient((progress) => set({ progress }));
-        const textReady = await handle.load(plan, textPlan);
+        const { textReady, textError } = await handle.load(plan, textPlan);
         set({
           status: "ready",
           textReady,
@@ -236,7 +236,7 @@ export const useSegment = create<SegmentStore>((set, get) => {
           progress: { ...IDLE_PROGRESS, phase: "ready" },
           note:
             textPlan && !textReady
-              ? "The text model did not load. Click and box prompts still work."
+              ? `The text model did not load. Click and box prompts still work. ${textError ?? ""}`.trim()
               : undefined,
         });
       } catch (error) {
@@ -365,4 +365,8 @@ export function segmentVolume(segment: Segment): number {
 
 export function downloadSize(plan: ModelPlan, text: TextPlan | undefined): string {
   return formatBytes(plan.bytes + (text?.bytes ?? 0));
+}
+
+if (import.meta.env.DEV) {
+  (globalThis as unknown as { __segment?: typeof useSegment }).__segment = useSegment;
 }

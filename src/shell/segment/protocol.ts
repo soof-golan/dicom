@@ -63,7 +63,13 @@ export type FromWorker =
       readonly fraction: number | undefined;
       readonly file: string | undefined;
     }
-  | { readonly kind: "loaded"; readonly id: number; readonly textReady: boolean }
+  | {
+      readonly kind: "loaded";
+      readonly id: number;
+      readonly textReady: boolean;
+      /** Why the text model failed, when it did. The mask model still works. */
+      readonly textError: string | undefined;
+    }
   | { readonly kind: "encoded"; readonly id: number }
   | {
       readonly kind: "mask";

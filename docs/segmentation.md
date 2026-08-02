@@ -26,30 +26,57 @@ slice and the mask disappears. Move back and it returns.
 
 ## 2. The models
 
-| Job                         | Repo                                 | Format                       | Bytes       |
-| --------------------------- | ------------------------------------ | ---------------------------- | ----------- |
-| Masks from a box or a click | `onnx-community/sam3-tracker-ONNX`   | `q4` encoder, `fp32` decoder | 392,560,198 |
-| Boxes from a phrase         | `Xenova/owlv2-base-patch16-ensemble` | `q4f16`                      | 132,046,418 |
+| Job                         | Repo                               | Format                       | Bytes       |
+| --------------------------- | ---------------------------------- | ---------------------------- | ----------- |
+| Masks from a box or a click | `onnx-community/sam3-tracker-ONNX` | `q4` encoder, `fp32` decoder | 392,560,198 |
+| A region from a phrase      | `Xenova/clipseg-rd64-refined`      | `q4f16`                      | 119,133,630 |
 
-The total download is 525 MB. The panel states this number before you start.
+The total download is 512 MB. The panel states this number before you start.
 
 The first model is the SAM 3 tracker. It takes points and boxes. It has no
-text input. The second model is OWLv2. It takes a phrase and returns boxes.
+text input.
 
-The text feature chains the two. OWLv2 finds a box, and the box goes into SAM
-as a box prompt. This chain is the standard "grounded SAM" pattern.
+The second model is CLIPSeg. It takes one phrase and returns a heat map of
+352 by 352, with one score per pixel.
+
+The text feature chains the two. The hot part of the heat map becomes a box,
+and the box goes into SAM as a box prompt. SAM draws the edge, because a
+threshold over a 352 by 352 heat map gives a soft and blocky boundary.
 
 Both repos are public. Neither needs an approval to download.
 
-`facebook/sam3` and `facebook/sam3.1` hold the real text head. Both are gated
-behind manual approval, and neither ships a browser format. Section 8 gives
-the detail.
+### Why not a detector
+
+A box detector was the first choice, because a detector gives a box directly.
+No OWL export loads. Every one stops at the same node:
+
+```
+Could not find an implementation for Cast(13) node with name '/class_head/Cast'
+```
+
+Tested on 2026-08-02 against onnxruntime-web 1.26:
+
+| Repo                                 | Format  | Provider | Result           |
+| ------------------------------------ | ------- | -------- | ---------------- |
+| `Xenova/owlv2-base-patch16-ensemble` | `q4f16` | WebGPU   | Cast(13) failure |
+| `Xenova/owlv2-base-patch16-ensemble` | `q4`    | WASM     | Cast(13) failure |
+| `Xenova/owlv2-base-patch16-ensemble` | `fp16`  | WebGPU   | Cast(13) failure |
+| `Xenova/owlvit-base-patch32`         | `q8`    | WASM     | Cast(13) failure |
+| `Xenova/owlvit-base-patch32`         | `q4f16` | WebGPU   | Cast(13) failure |
+
+Two repos, four weight formats, both providers. The fault is in the export of
+the classification head, not in the quantization and not in the provider.
+CLIPSeg has no classification head, so it has no such node.
 
 ### License
 
 The SAM 3 weights carry the SAM License, not Apache-2.0 or MIT. The license
 permits redistribution. One condition applies: a copy of the license must
-travel with the weights. OWLv2 carries Apache-2.0.
+travel with the weights. CLIPSeg carries Apache-2.0.
+
+`facebook/sam3` and `facebook/sam3.1` hold the real text head. Both are gated
+behind manual approval, and neither ships a browser format. Section 8 gives
+the detail.
 
 ---
 
@@ -132,6 +159,17 @@ per prompt.
 This split is why a second click on the same cut is fast. The viewer keeps
 the embedding for the cut under the cursor and reuses it.
 
+Measured on an Apple Silicon Mac, Chrome, WebGPU, on the sample elbow study:
+
+| Step                                 | Time         |
+| ------------------------------------ | ------------ |
+| First visit, 512 MB over a slow link | 5 to 12 min  |
+| Later visit, everything cached       | 2.6 s        |
+| First prompt on a cut, with encoding | 6.6 s        |
+| Later box prompt on the same cut     | 166 ms       |
+| Later click prompt on the same cut   | 242 ms       |
+| One CLIPSeg search                   | 60 to 100 ms |
+
 ### From a pixel to a voxel
 
 A mask is a flat 2D image. The cut it sits on is an arbitrary plane in
@@ -180,7 +218,7 @@ MRI and ultrasound. Those authors evaluated clicks, boxes and masks only.
 They did not evaluate text prompts on medical data at all.
 
 Terms such as "radial collateral ligament" or "capitulum humeri" will not
-work. The models learned 4M noun phrases from natural photographs. Elbow
+work. The models learned their phrases from natural photographs. Elbow
 ligament names are not in that set.
 
 Sources:
@@ -188,6 +226,25 @@ Sources:
 - SAM 3 paper, limitations: https://arxiv.org/abs/2511.16719
 - Medical SAM3: https://arxiv.org/abs/2601.10880
 - SAM 2 against SAM 3 on 3D medical data: https://arxiv.org/abs/2511.21926
+
+### What we measured on this study
+
+One axial cut of the sample elbow MRI, series `pd_tse_fs_tra_DRB`, on
+2026-08-02. The number is the peak of the CLIPSeg heat map, 0 to 1.
+
+| Phrase             | Peak | What came back                          |
+| ------------------ | ---- | --------------------------------------- |
+| "skin"             | 0.96 | The correct outer border of the arm     |
+| "the bright fluid" | 0.52 | A small bright spot. Plausible.         |
+| "bone"             | 0.40 | A box over most of the arm. Not useful. |
+| "fat"              | 0.39 | A tall strip. Not useful.               |
+| "muscle"           | 0.34 | A box over most of the arm. Not useful. |
+
+This matches the published numbers. Everyday words that a photograph can
+show, such as "skin", work. Tissue names do not. A peak below about 0.5
+means the model found nothing and returned the whole picture.
+
+The panel reports the peak after each search, so a reader can see this.
 
 ### Box and click prompts
 
@@ -214,6 +271,17 @@ hardest case for every SAM variant.
 
 Today the weights come from `huggingface.co`, which redirects to a CDN host
 under `hf.co`. `public/_headers` lists both in `connect-src`.
+
+transformers.js also loads the ONNX Runtime WebAssembly files from
+`cdn.jsdelivr.net`. That host is not in the policy, so a deployed build will
+block them. Two ways to correct this, and the second is better:
+
+1. Add `https://cdn.jsdelivr.net` to `script-src` and `connect-src`.
+2. Set `env.backends.onnx.wasm.wasmPaths` to a copy on our own origin. The
+   build already writes `ort-wasm-simd-threaded.asyncify.wasm` into `dist`,
+   at 23.5 MB, so the file is there but nothing points at it.
+
+Option 2 keeps the policy tight. Do it before the first deploy.
 
 The plan is to copy the files to Cloudflare R2 on a custom domain. Two
 reasons: we control availability, and we control the CORS headers. After the
@@ -256,4 +324,7 @@ weights that anybody can download today.
 - Masks draw on the cuts. The 3D view does not show them.
 - A stopped download starts again from the beginning.
 - The text field searches the cut of the last prompt, or the axial cut.
+- CLIPSeg takes one phrase per run. Two phrases stop with a shape mismatch.
 - The panel keeps masks in memory only. A reload loses them.
+- One failed model load poisons the runtime. The worker must stop and start
+  again, which is what the **Stop** button does.
