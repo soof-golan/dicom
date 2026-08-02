@@ -12,6 +12,7 @@ import {
   STRUCTURE_INFO,
   STRUCTURE_ORDER,
   StructureError,
+  VOXEL_FADE,
   type ComponentEvidence,
   type StructureClass,
 } from "./structures.ts";
@@ -164,7 +165,7 @@ describe("splitEnds", () => {
     // Ten steps along the slice axis is 33 mm, not 10.
     const bucket = new Uint8Array(1000);
     const along = [...Array(10).keys()].map((k) => k * 100);
-    const length = splitEnds(along, [10, 10, 10], [0.27, 0.27, 3.3], bucket);
+    const { length } = splitEnds(along, [10, 10, 10], [0.27, 0.27, 3.3], bucket);
     expect(length).toBeCloseTo(9 * 3.3, 3);
   });
 
@@ -184,7 +185,10 @@ describe("splitEnds", () => {
   it("finds the long axis whichever way the component runs", () => {
     const bucket = new Uint8Array(1000);
     const acrossRows = [...Array(8).keys()].map((j) => j * 10);
-    expect(splitEnds(acrossRows, [10, 10, 10], [1, 1, 1], bucket)).toBeCloseTo(7, 3);
+    const { length, axis } = splitEnds(acrossRows, [10, 10, 10], [1, 1, 1], bucket);
+    expect(length).toBeCloseTo(7, 3);
+    // The component runs along j, so the axis must point that way.
+    expect(Math.abs(axis[1])).toBeCloseTo(1, 6);
   });
 });
 
@@ -240,10 +244,14 @@ describe("findStructures on a real elbow crop", () => {
     expect(result.warnings.join(" ")).toMatch(/between slices/i);
   });
 
-  it("gives every named voxel a confidence above the floor", () => {
+  it("gives every named voxel a confidence near the floor or above", () => {
+    // A component must clear the floor before any of its voxels are named. A
+    // voxel whose own shape was faint keeps a fraction of that score.
     for (let index = 0; index < result.labels.length; index += 1) {
       if (result.labels[index] === 0) continue;
-      expect(result.confidence[index]! / 255).toBeGreaterThanOrEqual(MIN_STRUCTURE_CONFIDENCE);
+      expect(result.confidence[index]! / 255).toBeGreaterThanOrEqual(
+        MIN_STRUCTURE_CONFIDENCE * VOXEL_FADE - 1 / 255,
+      );
     }
   });
 

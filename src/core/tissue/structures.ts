@@ -47,12 +47,13 @@ import type { Vec3 } from "../geometry/vec3.ts";
 import { applyAffine, invertAffine } from "../geometry/vec3.ts";
 import type { Volume } from "../volume/build.ts";
 import { classifyPair, DEFAULT_THRESHOLDS, type Thresholds, type TissueClass } from "./classify.ts";
-import { createSampler, sharesFrameOfReference } from "./resample.ts";
+import { sharesFrameOfReference, trilinear } from "./resample.ts";
 import {
   DEFAULT_SCALES,
   fieldFromVolume,
   prepareScales,
   shapeAt,
+  type ScalarField,
   type ShapeKind,
 } from "./shape.ts";
 
@@ -126,6 +127,33 @@ export function structureIndex(id: StructureClass): number {
  * judge is worse than no color.
  */
 export const MIN_STRUCTURE_CONFIDENCE = 0.15;
+
+/**
+ * Shape confidence a voxel needs before it can START a component.
+ *
+ * Every dark structure in an elbow touches its neighbour. If a weak voxel could
+ * start a piece, one flood fill would return the whole skeleton as a single
+ * blob, because weak voxels lie everywhere and bridge everything.
+ */
+export const SEED_VOXEL_SHAPE = 0.25;
+
+/**
+ * Shape confidence a voxel needs before it can JOIN a component.
+ *
+ * A tendon fades where a slice cuts it at an angle, so a bar high enough to
+ * keep noise out would also cut real structures into pieces. Growing from a
+ * strong seed through weaker voxels keeps a structure whole without letting
+ * noise begin one. A voxel below this bar stays out and acts as a wall.
+ */
+export const GROW_VOXEL_SHAPE = 0.08;
+
+/**
+ * The least a voxel keeps of its component's confidence.
+ *
+ * A voxel whose own shape was faint still belongs to the component that the
+ * evidence named. It reports less certainty, not none.
+ */
+export const VOXEL_FADE = 0.6;
 
 export interface StructureRules {
   /** A component smaller than this is noise. */
@@ -301,6 +329,14 @@ export interface StructureField {
 export interface SequenceVolumes {
   readonly t1: Volume;
   readonly fatsat: Volume;
+  /**
+   * The volume whose grid carries the shape and the labels. Defaults to `t1`.
+   *
+   * A fused volume with cubic voxels belongs here. Shape needs equal steps
+   * along every axis, and the signal rule does not: it reads one voxel at a
+   * time, so it can sample the two sequences wherever this grid puts them.
+   */
+  readonly shapeVolume?: Volume;
 }
 
 export interface StructureOptions {
@@ -311,8 +347,14 @@ export interface StructureOptions {
   readonly reach?: number;
 }
 
-/** Three millimetres reaches past a fat plane into the muscle behind it. */
-export const DEFAULT_REACH = 3;
+/**
+ * How far a ray looks for a named tissue, in millimetres.
+ *
+ * A ligament ends on cortical bone, and cortical bone is dark as well, so the
+ * ray must cross the whole shell before marrow answers. Three millimetres stops
+ * inside the shell and reports nothing. Eight reaches the marrow behind it.
+ */
+export const DEFAULT_REACH = 8;
 
 /** The share of a component's length that counts as one end. */
 const END_SHARE = 0.3;
@@ -345,13 +387,16 @@ export function findStructures(
   options: StructureOptions = {},
 ): StructureField {
   const { t1, fatsat } = pair;
-  if (!sharesFrameOfReference(t1, fatsat)) {
-    throw new StructureError("the two series are in different frames of reference");
+  const grid = pair.shapeVolume ?? t1;
+  for (const volume of [fatsat, grid]) {
+    if (!sharesFrameOfReference(t1, volume)) {
+      throw new StructureError("the series are in different frames of reference");
+    }
   }
 
   const rules = options.rules ?? DEFAULT_STRUCTURE_RULES;
-  const warnings: string[] = [];
-  const anisotropy = Math.max(...t1.spacing) / Math.min(...t1.spacing);
+  const warnings: string[] = [...grid.warnings];
+  const anisotropy = Math.max(...grid.spacing) / Math.min(...grid.spacing);
   if (anisotropy > 4) {
     warnings.push(
       `Voxels are ${anisotropy.toFixed(0)} times longer between slices than across them. ` +
@@ -359,10 +404,11 @@ export function findStructures(
     );
   }
 
-  const tissue = classifyGrid(t1, fatsat, options.thresholds ?? DEFAULT_THRESHOLDS);
-  const shapes = readShapes(t1, tissue, options.scales ?? DEFAULT_SCALES);
-  const groups = groupByShape(t1.dims, t1.spacing, tissue, shapes.kinds, shapes.confidence);
-  const contacts = measureContacts(t1, tissue, groups, options.reach ?? DEFAULT_REACH);
+  const signal = fieldFromVolume(grid);
+  const tissue = classifyGrid(grid, t1, fatsat, options.thresholds ?? DEFAULT_THRESHOLDS);
+  const shapes = readShapes(signal, tissue, options.scales ?? DEFAULT_SCALES);
+  const groups = groupByShape(grid.dims, grid.spacing, tissue, shapes.kinds, shapes.confidence);
+  const contacts = measureContacts(grid, tissue, groups, options.reach ?? DEFAULT_REACH);
 
   const labels = new Uint8Array(tissue.length);
   const confidence = new Uint8Array(tissue.length);
@@ -377,10 +423,13 @@ export function findStructures(
 
     const label = structureIndex(named.structure);
     for (const index of group.voxels) {
-      // The component's confidence, scaled by how sure the shape was here. A
-      // voxel at a blurred end of a tendon must not claim what its middle does.
-      const local = named.confidence * shapes.confidence[index]!;
-      if (local < MIN_STRUCTURE_CONFIDENCE) continue;
+      // The component already earned its confidence, and that score already
+      // holds the mean shape confidence. Multiplying by the voxel's own shape
+      // confidence again would count the same doubt twice, and almost every
+      // voxel would fall under the floor. So the voxel keeps the component's
+      // score, faded where its own shape was less clear than the seed bar.
+      const clarity = Math.min(1, shapes.confidence[index]! / SEED_VOXEL_SHAPE);
+      const local = named.confidence * (VOXEL_FADE + (1 - VOXEL_FADE) * clarity);
       labels[index] = label;
       confidence[index] = Math.round(Math.min(1, local) * 255);
       namedVoxels += 1;
@@ -391,9 +440,9 @@ export function findStructures(
   for (const value of tissue) if (value === DARK) darkVoxels += 1;
 
   return {
-    dims: t1.dims,
-    spacing: t1.spacing,
-    patientToVoxel: invertAffine(t1.voxelToPatient),
+    dims: grid.dims,
+    spacing: grid.spacing,
+    patientToVoxel: invertAffine(grid.voxelToPatient),
     labels,
     confidence,
     components,
@@ -403,21 +452,38 @@ export function findStructures(
   };
 }
 
-/** The tissue class of every voxel of the T1 grid, from both sequences. */
-export function classifyGrid(t1: Volume, fatsat: Volume, thresholds: Thresholds): Uint8Array {
-  const [nx, ny, nz] = t1.dims;
-  const partner = createSampler(fatsat);
-  const { min, max } = t1.valueRange;
-  const span = max - min || 1;
+/**
+ * The tissue class at every voxel of a grid, read from both sequences.
+ *
+ * The grid need not be either series. Every reading goes through patient
+ * millimetres, which is the one thing the series share.
+ *
+ * Both sequences go onto their own percentile scale first, the same scale the
+ * shader uses. MRI signal is not calibrated the way a CT number is, so the two
+ * share no unit. Dividing by the brightest voxel instead would divide by noise,
+ * and then all the tissue lands near zero and reads as dark.
+ */
+export function classifyGrid(
+  grid: Volume,
+  t1: Volume,
+  fatsat: Volume,
+  thresholds: Thresholds,
+): Uint8Array {
+  const [nx, ny, nz] = grid.dims;
+  const sequences = [t1, fatsat].map((volume) => ({
+    field: fieldFromVolume(volume),
+    patientToVoxel: invertAffine(volume.voxelToPatient),
+  }));
   const out = new Uint8Array(nx * ny * nz);
 
   for (let k = 0; k < nz; k += 1) {
     for (let j = 0; j < ny; j += 1) {
       for (let i = 0; i < nx; i += 1) {
         const index = (k * ny + j) * nx + i;
-        const point: Vec3 = applyAffine(t1.voxelToPatient, [i, j, k]);
-        const own = (t1.data[index]! - min) / span;
-        const other = partner.normalizedAt(point);
+        const point: Vec3 = applyAffine(grid.voxelToPatient, [i, j, k]);
+        const [own, other] = sequences.map((sequence) =>
+          trilinear(sequence.field, applyAffine(sequence.patientToVoxel, point)),
+        );
         out[index] = TISSUE_INDEX[classifyPair({ t1: own, pdfs: other }, thresholds).tissue];
       }
     }
@@ -434,9 +500,9 @@ const KIND_INDEX: Readonly<Record<ShapeKind, number>> = { none: 0, tube: 1, shee
 const KIND_OF: readonly ShapeKind[] = ["none", "tube", "sheet", "blob"];
 
 /** The shape at every dark voxel. A voxel of any other class is left as `none`. */
-function readShapes(volume: Volume, tissue: Uint8Array, scales: readonly number[]): Shapes {
-  const [nx, ny, nz] = volume.dims;
-  const prepared = prepareScales(fieldFromVolume(volume), scales);
+function readShapes(signal: ScalarField, tissue: Uint8Array, scales: readonly number[]): Shapes {
+  const [nx, ny, nz] = signal.dims;
+  const prepared = prepareScales(signal, scales);
   const kinds = new Uint8Array(tissue.length);
   const confidence = new Float32Array(tissue.length);
 
@@ -446,6 +512,7 @@ function readShapes(volume: Volume, tissue: Uint8Array, scales: readonly number[
         const index = (k * ny + j) * nx + i;
         if (tissue[index] !== DARK) continue;
         const shape = shapeAt(prepared, i, j, k);
+        if (shape.confidence < GROW_VOXEL_SHAPE) continue;
         kinds[index] = KIND_INDEX[shape.kind];
         confidence[index] = shape.confidence;
       }
@@ -457,6 +524,8 @@ function readShapes(volume: Volume, tissue: Uint8Array, scales: readonly number[
 interface Group {
   readonly id: number;
   readonly voxels: number[];
+  /** Unit direction from end 0 to end 2, in millimetre space. */
+  readonly axis: Vec3;
   readonly evidence: Omit<
     ComponentEvidence,
     "marrowContact" | "muscleContact" | "fatContact" | "ends"
@@ -493,7 +562,9 @@ function groupByShape(
   for (let start = 0; start < tissue.length; start += 1) {
     if (owner[start] !== -1 || tissue[start] !== DARK) continue;
     const kind = kinds[start]!;
-    if (kind === 0) continue;
+    // Only a voxel sure of its shape may start a piece. Weaker voxels can join
+    // one, so a structure stays whole, but they cannot begin one.
+    if (kind === 0 || shapeConfidence[start]! < SEED_VOXEL_SHAPE) continue;
 
     const id = list.length;
     const voxels: number[] = [];
@@ -540,11 +611,12 @@ function describe(
 ): Group {
   let sum = 0;
   for (const index of voxels) sum += shapeConfidence[index]!;
-  const length = splitEnds(voxels, dims, spacing, bucket);
+  const { length, axis } = splitEnds(voxels, dims, spacing, bucket);
 
   return {
     id,
     voxels,
+    axis,
     evidence: {
       kind: KIND_OF[kind]!,
       voxels: voxels.length,
@@ -571,7 +643,7 @@ export function splitEnds(
   dims: readonly [number, number, number],
   spacing: readonly [number, number, number],
   bucket: Uint8Array,
-): number {
+): { length: number; axis: Vec3 } {
   const [nx, ny] = dims;
   const [sx, sy, sz] = spacing;
   const at = (index: number): Vec3 => {
@@ -625,7 +697,8 @@ export function splitEnds(
     const t = along(index);
     bucket[index] = t <= low + edge ? 0 : t >= high - edge ? 2 : 1;
   }
-  return length;
+  // Bucket 2 lies toward the tip, so the unit axis points from end 0 to end 2.
+  return { length, axis: [axis[0] / size, axis[1] / size, axis[2] / size] };
 }
 
 /**
@@ -671,6 +744,11 @@ const emptyCounts = (): Counts => ({ marrow: 0, muscle: 0, fat: 0, total: 0 });
  * while the tissue stays dark, and record the first named tissue reached. This
  * asks what a structure abuts, which is the question the rules need, and it
  * costs far less than growing the whole group outward.
+ *
+ * At an end, only the rays that leave along the long axis count. What lies
+ * BESIDE a tendon is not what it attaches to: at the elbow, muscle lies beside
+ * a collateral ligament for its whole length, and counting that muscle would
+ * name every ligament a tendon. What lies BEYOND the tip is the attachment.
  */
 function measureContacts(
   volume: Volume,
@@ -679,30 +757,47 @@ function measureContacts(
   reach: number,
 ): Map<number, Contacts> {
   const [nx, ny, nz] = volume.dims;
+  const [sx, sy, sz] = volume.spacing;
   const steps: readonly (readonly [number, number, number, number])[] = [
-    [1, 0, 0, volume.spacing[0]],
-    [-1, 0, 0, volume.spacing[0]],
-    [0, 1, 0, volume.spacing[1]],
-    [0, -1, 0, volume.spacing[1]],
-    [0, 0, 1, volume.spacing[2]],
-    [0, 0, -1, volume.spacing[2]],
+    [1, 0, 0, sx],
+    [-1, 0, 0, sx],
+    [0, 1, 0, sy],
+    [0, -1, 0, sy],
+    [0, 0, 1, sz],
+    [0, 0, -1, sz],
   ];
+  // A ray counts as leaving along the axis when it is within 70 degrees of it.
+  // A narrower cone leaves an end with one ray out of six, and one ray that
+  // happens to stop in dark tissue then reports nothing at all.
+  const ALONG_AXIS = 0.3;
 
   const tally = new Map<number, [Counts, Counts, Counts]>();
+  const axes = new Map<number, Vec3>();
   for (const group of groups.list) {
     tally.set(group.id, [emptyCounts(), emptyCounts(), emptyCounts()]);
+    axes.set(group.id, group.axis);
   }
 
   for (let index = 0; index < tissue.length; index += 1) {
     const id = groups.owner[index]!;
     if (id === -1) continue;
     const buckets = tally.get(id)!;
-    const counts = buckets[groups.bucket[index]! as 0 | 1 | 2];
+    const bucket = groups.bucket[index]! as 0 | 1 | 2;
+    const counts = buckets[bucket];
+    const axis = axes.get(id)!;
     const k = Math.floor(index / (nx * ny));
     const j = Math.floor((index - k * nx * ny) / nx);
     const i = index - k * nx * ny - j * nx;
 
     for (const [di, dj, dk, step] of steps) {
+      if (bucket !== 1) {
+        // End 0 lies against the axis, end 2 along it. One step along an index
+        // axis is one unit along the same axis in millimetre space, so the two
+        // vectors compare directly.
+        const outward = bucket === 2 ? 1 : -1;
+        const alignment = (di * axis[0] + dj * axis[1] + dk * axis[2]) * outward;
+        if (alignment < ALONG_AXIS) continue;
+      }
       const limit = Math.max(1, Math.floor(reach / step));
       for (let t = 1; t <= limit; t += 1) {
         const x = i + di * t;
