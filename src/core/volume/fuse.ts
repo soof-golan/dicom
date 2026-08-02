@@ -20,8 +20,8 @@
  * not itself a measurement, and it carries a warning that says so.
  */
 import { affineFromAxes, applyAffine, invertAffine, type Vec3 } from "../geometry/vec3.ts";
+import { muscleRange } from "../tissue/scale.ts";
 import type { Volume } from "./build.ts";
-import { percentileRange } from "./statistics.ts";
 
 export class FusionError extends Error {
   override readonly name = "FusionError";
@@ -141,9 +141,14 @@ interface Source {
 function prepare(volume: Volume): Source {
   const { min, max } = volume.valueRange;
   const span = max - min || 1;
-  const fraction = percentileRange(volume);
-  // The percentiles arrive as a fraction of the stored range, so they are
-  // turned back into stored values here.
+  // Anchored on muscle, not on a percentile of the whole volume. The three
+  // series were acquired separately, so each ran its own prescan and each
+  // carries its own gain. A percentile also follows how much air is in the
+  // field of view, and the three were prescribed over different boxes, so it
+  // would read differently for each and make one series brighter than the rest.
+  const fraction = muscleRange(volume);
+  // The range arrives as a fraction of the stored range, so it is turned back
+  // into stored values here.
   const low = min + fraction.low * span;
   const high = min + fraction.high * span;
   return {
