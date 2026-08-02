@@ -27,7 +27,7 @@
  * axis, so the eigenvalues belong to the patient, not to the grid.
  */
 import type { Volume } from "../volume/build.ts";
-import { percentileRange } from "../view/planes.ts";
+import { muscleRange, toSignal } from "./scale.ts";
 
 /** Intensity on a voxel grid, with the millimetre size of one voxel. */
 export interface ScalarField {
@@ -398,21 +398,21 @@ export function shapeAt(scales: readonly ScaleField[], i: number, j: number, k: 
 }
 
 /**
- * A volume as a field from 0 to 1.
+ * A volume as a field on the classifier's own scale.
  *
- * The scale is the percentile scale that the classifier uses, so a curvature
- * measured here means the same thing as a signal band there.
+ * The scale is anchored so that muscle reads `MUSCLE_LEVEL`, which is what
+ * `classify.ts` compares against. A curvature measured here therefore means
+ * the same thing as a signal band there, and `STRUCTURE_SCALE` keeps its
+ * meaning across volumes with different receive gain.
  */
 export function fieldFromVolume(volume: Volume): ScalarField {
   const { min, max } = volume.valueRange;
   const span = max - min || 1;
-  const { low, high } = percentileRange(volume);
-  const width = Math.max(high - low, 1e-6);
+  const range = muscleRange(volume);
 
   const data = new Float32Array(volume.data.length);
   for (let index = 0; index < data.length; index += 1) {
-    const normalized = (volume.data[index]! - min) / span;
-    data[index] = Math.min(Math.max((normalized - low) / width, 0), 1);
+    data[index] = toSignal((volume.data[index]! - min) / span, range);
   }
   return { dims: volume.dims, spacing: volume.spacing, data };
 }

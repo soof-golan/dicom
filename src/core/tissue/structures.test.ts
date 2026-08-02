@@ -6,6 +6,7 @@ import { buildVolume } from "../volume/build.ts";
 import {
   DEFAULT_STRUCTURE_RULES,
   findStructures,
+  markMarrow,
   MIN_STRUCTURE_CONFIDENCE,
   nameComponent,
   splitEnds,
@@ -189,6 +190,79 @@ describe("splitEnds", () => {
     expect(length).toBeCloseTo(7, 3);
     // The component runs along j, so the axis must point that way.
     expect(Math.abs(axis[1])).toBeCloseTo(1, 6);
+  });
+});
+
+describe("markMarrow", () => {
+  const FAT = 1;
+  const DARK = 6;
+  const MARROW = 2;
+
+  /** A cube of fat, walled by dark, inside a block of fat that reaches the edge. */
+  function shell(size: number, wallGap = 0): Uint8Array {
+    const tissue = new Uint8Array(size * size * size).fill(FAT);
+    const at = (i: number, j: number, k: number) => (k * size + j) * size + i;
+    const low = 3;
+    const high = size - 4;
+    for (let k = low; k <= high; k += 1) {
+      for (let j = low; j <= high; j += 1) {
+        for (let i = low; i <= high; i += 1) {
+          const onWall = [i, j, k].some((v) => v === low || v === high);
+          if (onWall) tissue[at(i, j, k)] = DARK;
+        }
+      }
+    }
+    // A square hole in one face. A wide hole lets the outside fat reach the middle.
+    for (let a = 0; a < wallGap; a += 1) {
+      for (let b = 0; b < wallGap; b += 1) {
+        tissue[at(low, low + 1 + a, low + 1 + b)] = FAT;
+      }
+    }
+    return tissue;
+  }
+
+  it("marks fat that a wall encloses", () => {
+    const size = 16;
+    const tissue = shell(size);
+    const marked = markMarrow([size, size, size], tissue);
+    expect(marked).toBeGreaterThan(0);
+    expect(tissue[(8 * size + 8) * size + 8]).toBe(MARROW);
+  });
+
+  it("leaves fat that reaches the outside alone", () => {
+    const size = 16;
+    const tissue = shell(size);
+    markMarrow([size, size, size], tissue);
+    // A corner voxel is outside the wall, so it stays fat.
+    expect(tissue[0]).toBe(FAT);
+  });
+
+  it("marks nothing when the wall has a wide hole", () => {
+    // A real gap in a cortical shell must leak. Only then is the fat outside.
+    const size = 16;
+    const tissue = shell(size, 3);
+    expect(markMarrow([size, size, size], tissue)).toBe(0);
+  });
+
+  it("still encloses when the wall has a one-voxel hole", () => {
+    // A shell one voxel thick loses a voxel to partial volume all the time. A
+    // gap that narrow is a flaw in the picture, not a hole in the bone.
+    const size = 16;
+    const tissue = shell(size, 1);
+    expect(markMarrow([size, size, size], tissue)).toBeGreaterThan(0);
+  });
+
+  it("marks nothing when no fat is enclosed", () => {
+    const tissue = new Uint8Array(8 * 8 * 8).fill(FAT);
+    expect(markMarrow([8, 8, 8], tissue)).toBe(0);
+  });
+
+  it("ignores a pocket too small to be a medullary cavity", () => {
+    const size = 12;
+    const tissue = new Uint8Array(size * size * size).fill(DARK);
+    // One fat voxel, walled in on every side by dark.
+    tissue[(6 * size + 6) * size + 6] = FAT;
+    expect(markMarrow([size, size, size], tissue)).toBe(0);
   });
 });
 

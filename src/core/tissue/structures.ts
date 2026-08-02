@@ -46,7 +46,7 @@
 import type { Vec3 } from "../geometry/vec3.ts";
 import { applyAffine, invertAffine } from "../geometry/vec3.ts";
 import type { Volume } from "../volume/build.ts";
-import { classifyPair, DEFAULT_THRESHOLDS, type Thresholds, type TissueClass } from "./classify.ts";
+import { classifyPair, type Thresholds, type TissueClass } from "./classify.ts";
 import { sharesFrameOfReference, trilinear } from "./resample.ts";
 import {
   DEFAULT_SCALES,
@@ -341,7 +341,10 @@ export interface SequenceVolumes {
 
 export interface StructureOptions {
   readonly rules?: StructureRules;
-  readonly thresholds?: Thresholds;
+  /** Band edges for the T1 sequence. Defaults to the classifier's own. */
+  readonly t1Bands?: Thresholds;
+  /** Band edges for the fat-saturated sequence. */
+  readonly fatBands?: Thresholds;
   readonly scales?: readonly number[];
   /** How far to look out from a component, in millimetres. */
   readonly reach?: number;
@@ -364,7 +367,6 @@ const DARK = 6;
 const TISSUE_INDEX: Readonly<Record<TissueClass, number>> = {
   background: 0,
   fat: 1,
-  marrow: 2,
   muscle: 3,
   fluid: 4,
   edema: 5,
@@ -372,9 +374,166 @@ const TISSUE_INDEX: Readonly<Record<TissueClass, number>> = {
   unknown: 7,
 };
 
-const MARROW = TISSUE_INDEX.marrow;
+/**
+ * Marrow, which the signal rule no longer reports on its own.
+ *
+ * `classify.ts` calls marrow `fat`, and correctly: both are fat, and their
+ * signal is the same. But this module needs bone as a landmark, and fat that
+ * lies inside a bone is the only sign of bone that signal offers.
+ *
+ * So marrow is recovered by geometry instead. See `markMarrow`.
+ */
+const MARROW = 2;
+
 const MUSCLE = TISSUE_INDEX.muscle;
 const FAT = TISSUE_INDEX.fat;
+
+/** A pocket of fat smaller than this is noise, not a medullary cavity. */
+const MIN_MARROW_VOXELS = 200;
+
+/**
+ * Enclosed fat below this leaves bone too weak to act as a landmark.
+ *
+ * The three bones of an elbow hold tens of thousands of voxels of marrow at
+ * this resolution. A tenth of that means the shell leaked.
+ */
+const MIN_MARROW_FOR_BONE = 20_000;
+
+/**
+ * Find the fat that lies inside a bone, and mark it as marrow.
+ *
+ * Subcutaneous fat and the fat between muscles all join up and reach the
+ * outside of the arm. Medullary fat does not: a cortical shell encloses it.
+ *
+ * So a flood fill started from every edge of the volume, travelling through
+ * everything EXCEPT dark tissue, reaches all the fat outside bone and none of
+ * the fat inside it. Only a dark wall stops the fill, and a cortical shell is
+ * the only dark wall that closes around fat. What the fill never reaches is
+ * marrow.
+ *
+ * The fill must cross air and muscle, not only fat. The edge of the volume is
+ * air, so a fill that moved through fat alone would start nowhere and would
+ * call every fat voxel in the arm marrow.
+ *
+ * This restores the landmark that the rules need. It is geometry, not signal,
+ * and the same caution applies: a shell with a gap leaks, and then the marrow
+ * behind it joins the outside and is not marked.
+ */
+export function markMarrow(dims: readonly [number, number, number], tissue: Uint8Array): number {
+  const [nx, ny, nz] = dims;
+  const wall = closedDarkWall(dims, tissue);
+  const reached = new Uint8Array(tissue.length);
+  const stack: number[] = [];
+
+  const consider = (i: number, j: number, k: number): void => {
+    const index = (k * ny + j) * nx + i;
+    if (reached[index] === 1 || wall[index] === 1) return;
+    reached[index] = 1;
+    stack.push(index);
+  };
+
+  for (let k = 0; k < nz; k += 1) {
+    for (let j = 0; j < ny; j += 1) {
+      for (let i = 0; i < nx; i += 1) {
+        const onEdge =
+          i === 0 || j === 0 || k === 0 || i === nx - 1 || j === ny - 1 || k === nz - 1;
+        if (onEdge) consider(i, j, k);
+      }
+    }
+  }
+
+  while (stack.length > 0) {
+    const index = stack.pop()!;
+    const k = Math.floor(index / (nx * ny));
+    const j = Math.floor((index - k * nx * ny) / nx);
+    const i = index - k * nx * ny - j * nx;
+    for (const [di, dj, dk] of NEIGHBOURS) {
+      const x = i + di;
+      const y = j + dj;
+      const z = k + dk;
+      if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) continue;
+      consider(x, y, z);
+    }
+  }
+
+  // Every pocket of fat the fill missed. Small pockets are noise, so each one
+  // is measured before it counts.
+  const owner = new Int32Array(tissue.length).fill(-1);
+  let marrowVoxels = 0;
+  for (let start = 0; start < tissue.length; start += 1) {
+    if (tissue[start] !== FAT || reached[start] === 1 || owner[start] !== -1) continue;
+    const pocket: number[] = [start];
+    owner[start] = start;
+    const walk: number[] = [start];
+    while (walk.length > 0) {
+      const index = walk.pop()!;
+      const k = Math.floor(index / (nx * ny));
+      const j = Math.floor((index - k * nx * ny) / nx);
+      const i = index - k * nx * ny - j * nx;
+      for (const [di, dj, dk] of NEIGHBOURS) {
+        const x = i + di;
+        const y = j + dj;
+        const z = k + dk;
+        if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) continue;
+        const next = (z * ny + y) * nx + x;
+        if (tissue[next] !== FAT || reached[next] === 1 || owner[next] !== -1) continue;
+        owner[next] = start;
+        pocket.push(next);
+        walk.push(next);
+      }
+    }
+    if (pocket.length < MIN_MARROW_VOXELS) continue;
+    for (const index of pocket) tissue[index] = MARROW;
+    marrowVoxels += pocket.length;
+  }
+  return marrowVoxels;
+}
+
+/**
+ * The dark mask, with one-voxel holes closed.
+ *
+ * A cortical shell is one to two voxels thick in places, and a partial volume
+ * at a slice edge can leave a hole in it. One hole lets the fill through, and
+ * then the whole medullary cavity reads as outside fat.
+ *
+ * So a voxel counts as wall when it is dark, or when dark lies on BOTH sides of
+ * it along any axis. That plugs a one-voxel gap and leaves an open gap open.
+ */
+function closedDarkWall(dims: readonly [number, number, number], tissue: Uint8Array): Uint8Array {
+  const [nx, ny, nz] = dims;
+  const wall = new Uint8Array(tissue.length);
+  const dark = (i: number, j: number, k: number): boolean => {
+    if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) return false;
+    return tissue[(k * ny + j) * nx + i] === DARK;
+  };
+
+  for (let k = 0; k < nz; k += 1) {
+    for (let j = 0; j < ny; j += 1) {
+      for (let i = 0; i < nx; i += 1) {
+        const index = (k * ny + j) * nx + i;
+        if (tissue[index] === DARK) {
+          wall[index] = 1;
+          continue;
+        }
+        const pinched =
+          (dark(i - 1, j, k) && dark(i + 1, j, k)) ||
+          (dark(i, j - 1, k) && dark(i, j + 1, k)) ||
+          (dark(i, j, k - 1) && dark(i, j, k + 1));
+        if (pinched) wall[index] = 1;
+      }
+    }
+  }
+  return wall;
+}
+
+const NEIGHBOURS: readonly (readonly [number, number, number])[] = [
+  [1, 0, 0],
+  [-1, 0, 0],
+  [0, 1, 0],
+  [0, -1, 0],
+  [0, 0, 1],
+  [0, 0, -1],
+];
 
 /**
  * Name the dark structures of one T1 and fat-saturated pair.
@@ -405,7 +564,17 @@ export function findStructures(
   }
 
   const signal = fieldFromVolume(grid);
-  const tissue = classifyGrid(grid, t1, fatsat, options.thresholds ?? DEFAULT_THRESHOLDS);
+  const tissue = classifyGrid(grid, t1, fatsat, options.t1Bands, options.fatBands);
+  const marrowVoxels = markMarrow(grid.dims, tissue);
+  // Bone is the landmark that names cortex, tendon, and ligament. The signal
+  // rule reports marrow as fat, so this module recovers it by enclosure. When
+  // little is enclosed, the cortical shell has gaps and those three go unnamed.
+  if (marrowVoxels < MIN_MARROW_FOR_BONE) {
+    warnings.push(
+      `Only ${marrowVoxels} voxels of fat lie enclosed by bone, so bone is a weak landmark here. ` +
+        `Cortex, tendon, and ligament will mostly stay unnamed.`,
+    );
+  }
   const shapes = readShapes(signal, tissue, options.scales ?? DEFAULT_SCALES);
   const groups = groupByShape(grid.dims, grid.spacing, tissue, shapes.kinds, shapes.confidence);
   const contacts = measureContacts(grid, tissue, groups, options.reach ?? DEFAULT_REACH);
@@ -467,7 +636,8 @@ export function classifyGrid(
   grid: Volume,
   t1: Volume,
   fatsat: Volume,
-  thresholds: Thresholds,
+  t1Bands?: Thresholds,
+  fatBands?: Thresholds,
 ): Uint8Array {
   const [nx, ny, nz] = grid.dims;
   const sequences = [t1, fatsat].map((volume) => ({
@@ -484,7 +654,7 @@ export function classifyGrid(
         const [own, other] = sequences.map((sequence) =>
           trilinear(sequence.field, applyAffine(sequence.patientToVoxel, point)),
         );
-        out[index] = TISSUE_INDEX[classifyPair({ t1: own, pdfs: other }, thresholds).tissue];
+        out[index] = TISSUE_INDEX[classifyPair({ t1: own, pdfs: other }, t1Bands, fatBands).tissue];
       }
     }
   }
