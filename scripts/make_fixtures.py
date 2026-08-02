@@ -18,6 +18,7 @@ The source data is private and is not in this repository.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -191,6 +192,57 @@ def write_signed(source: Path, out_dir: Path) -> None:
     write(ds, out_dir / "signed-rescaled.dcm")
 
 
+def write_variants(source: Path, out_dir: Path) -> None:
+    """Write geometry variants that the elbow study does not contain.
+
+    The four elbow series are all square and have square pixels, so they cannot
+    catch two classic faults: a row/column mix-up in the spacing, and a volume
+    built from slices of unequal size.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Rectangular pixels. PixelSpacing is [between rows, between columns], so
+    # a viewer that swaps them stretches the image along the wrong axis.
+    ds = pydicom.dcmread(source)
+    ds.PixelSpacing = ["0.5", "0.25"]
+    write(ds, out_dir / "anisotropic.dcm")
+
+    # A smaller image, for the slice-size check in the volume builder.
+    ds = pydicom.dcmread(source)
+    crop_center(ds, 32)
+    write(ds, out_dir / "small-32.dcm")
+
+
+def write_reference(source: Path, out: Path) -> None:
+    """Record ground truth for the decoded pixels.
+
+    A hash of the pixel bytes proves that our TypeScript decoder agrees with
+    pydicom, and it costs 64 characters instead of 4096 numbers.
+    """
+    ds = pydicom.dcmread(source)
+    pixels = ds.pixel_array.astype("<u2")
+    raw = pixels.tobytes()
+    samples = [
+        [int(r), int(c), int(pixels[r, c])]
+        for r, c in ((0, 0), (0, 63), (31, 31), (32, 32), (63, 0), (63, 63), (10, 50), (50, 10))
+    ]
+    out.write_text(
+        json.dumps(
+            {
+                "rows": int(ds.Rows),
+                "columns": int(ds.Columns),
+                "min": int(pixels.min()),
+                "max": int(pixels.max()),
+                "sum": int(pixels.sum()),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "samples": samples,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="Root of the source DICOM tree")
@@ -241,6 +293,8 @@ def main() -> None:
     assert first_slice is not None
     transcode(first_slice, args.out / "syntax")
     write_signed(first_slice, args.out / "syntax")
+    write_variants(first_slice, args.out / "variants")
+    write_reference(first_slice, args.out / "syntax" / "reference.json")
 
     (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     total = sum(p.stat().st_size for p in args.out.rglob("*.dcm"))

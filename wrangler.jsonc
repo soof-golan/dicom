@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "dicom",
+  "compatibility_date": "2026-08-02",
+
+  // A static site. There is no Worker script, only assets, so `main` is absent.
+  // `single-page-application` serves index.html for a path that matches no file,
+  // which the client-side router needs. A real asset always wins over this rule.
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+  },
+
+  "observability": {
+    "enabled": true,
+  },
+}
