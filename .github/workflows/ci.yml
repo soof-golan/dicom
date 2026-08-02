@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Installs the `vp` CLI, pins Node, and caches the pnpm store.
+      # The Vite+ version is read from the `vite-plus` catalog entry in
+      # pnpm-workspace.yaml, resolved through package.json + pnpm-lock.yaml.
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: true
+
+      - name: Format, lint, and type check
+        run: vp check
+
+      # `--passWithNoTests` keeps CI green until src/core lands its first test.
+      # Without it, Vitest exits 1 on an empty suite. Remove the flag once
+      # tests exist, so an accidentally-empty suite fails the build again.
+      - name: Test
+        run: vp test --run --passWithNoTests

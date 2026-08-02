@@ -1,0 +1,109 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# One deploy at a time per branch. A newer push cancels an older, still-running
+# deploy for the same branch, but never cancels a production deploy midway.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  deployments: write
+  pull-requests: write
+
+env:
+  CLOUDFLARE_PROJECT_NAME: dicom
+  PRODUCTION_BRANCH: main
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Pull requests from forks cannot read repository secrets, so the deploy
+    # would fail with a confusing auth error. Skip them instead.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: true
+
+      - name: Build
+        run: vp build
+
+      # `public/_headers` and `public/_redirects` are copied verbatim into
+      # `dist/` by Vite. Fail early if they went missing.
+      - name: Check build output
+        run: |
+          test -f dist/index.html
+          test -f dist/_headers
+          test -d dist/assets
+
+      - name: Deploy to Cloudflare Pages
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4"
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          # A deploy whose --branch equals the project production branch is a
+          # production deploy. Every other branch gets a preview deployment.
+          command: >-
+            pages deploy dist
+            --project-name=${{ env.CLOUDFLARE_PROJECT_NAME }}
+            --branch=${{ github.event_name == 'pull_request' && github.head_ref || env.PRODUCTION_BRANCH }}
+
+      - name: Comment the preview URL on the pull request
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+          ALIAS_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+        with:
+          script: |
+            const marker = '<!-- cloudflare-pages-preview -->';
+            const body = [
+              marker,
+              '### Cloudflare Pages preview',
+              '',
+              '| | URL |',
+              '| --- | --- |',
+              `| This deployment | ${process.env.DEPLOYMENT_URL || 'n/a'} |`,
+              `| Branch alias | ${process.env.ALIAS_URL || 'n/a'} |`,
+              '',
+              `Built from \`${context.payload.pull_request.head.sha.slice(0, 7)}\`.`,
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number },
+            );
+            const existing = comments.find(
+              (c) => c.user.type === 'Bot' && c.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }

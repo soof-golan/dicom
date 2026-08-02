@@ -1,0 +1,36 @@
+{
+  // ALTERNATIVE deployment target: Workers with static assets.
+  //
+  // This file is not used by default. wrangler.jsonc (Cloudflare Pages) is the
+  // active configuration. Cloudflare gives new platform features to Workers
+  // first, so this file exists to make the move a small change.
+  //
+  // To switch, read the "Move to Workers static assets" section of
+  // docs/deployment.md. In short:
+  //   1. Delete wrangler.jsonc and rename this file to wrangler.jsonc.
+  //   2. Change the deploy command in .github/workflows/deploy.yml
+  //      from `pages deploy dist --project-name=dicom --branch=...`
+  //      to `versions upload` (previews) and `deploy` (production).
+  //   3. Change the API token permission from "Cloudflare Pages: Edit"
+  //      to "Workers Scripts: Edit".
+  //
+  // public/_headers and public/_redirects work the same on both targets.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+
+  "name": "dicom",
+  "compatibility_date": "2026-08-02",
+
+  "assets": {
+    "directory": "./dist",
+
+    // Pages serves index.html for unknown paths automatically when the site
+    // has no top-level 404.html. Workers does not. This setting restores that
+    // behavior, and it only applies after asset matching fails, so hashed
+    // files under /assets/ still return 404 when they are missing.
+    "not_found_handling": "single-page-application",
+  },
+
+  "observability": {
+    "enabled": true,
+  },
+}

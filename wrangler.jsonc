@@ -1,0 +1,22 @@
+{
+  // Cloudflare Pages project configuration.
+  //
+  // This repository deploys through GitHub Actions (.github/workflows/deploy.yml),
+  // not through Cloudflare's Git integration. Wrangler reads this file so the
+  // deploy command does not need to repeat the project name or output directory.
+  //
+  // See docs/deployment.md for the one-time setup and for the Workers
+  // alternative in wrangler.workers.jsonc.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+
+  // Must match the Pages project created in the Cloudflare dashboard.
+  "name": "dicom",
+
+  // The Vite+ build output directory.
+  "pages_build_output_dir": "./dist",
+
+  // Required for every Wrangler configuration file. This project ships no
+  // Pages Functions, so the value only sets the runtime version that a future
+  // Function would get.
+  "compatibility_date": "2026-08-02",
+}

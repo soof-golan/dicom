@@ -1,0 +1,21 @@
+# Cloudflare Pages redirects. This file holds no rules on purpose.
+#
+# Do NOT add the usual single-page-application rule:
+#
+#     /* /index.html 200
+#
+# Cloudflare Pages does not need it, and the rule breaks this site.
+# Two documented Pages behaviors are the reason:
+#
+# 1. "Redirects are always followed, regardless of whether or not an asset
+#    matches the incoming request." A /* rule therefore returns index.html for
+#    /assets/index-<hash>.js as well, so no script or stylesheet ever loads.
+# 2. "Redirects are applied before headers", so a matching redirect discards
+#    the rules in _headers, including the Content-Security-Policy.
+#
+# Pages already serves index.html for unknown paths, because this project has
+# no top-level 404.html file. See "Single-page application (SPA) rendering" at
+# https://developers.cloudflare.com/pages/configuration/serving-pages/
+#
+# Add real redirects below, one per line, in the form:
+#     [source] [destination] [code]

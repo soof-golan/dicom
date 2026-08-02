@@ -1,0 +1,33 @@
+# Cloudflare Pages response headers.
+# Vite copies this file from public/ into dist/ without changes.
+# Syntax: a path pattern at column 0, then indented "Name: value" lines.
+# Only whole-line comments that start with "#" are supported.
+# Limits: 100 rules, 2000 characters per line.
+# Every directive is explained in docs/deployment.md.
+
+# --- Applies to every response ---------------------------------------------
+# Replace R2-BUCKET-HOSTNAME.example.com in connect-src with the real public
+# hostname of the R2 bucket. Until then, fetches to R2 will be blocked.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; worker-src 'self' blob:; child-src 'self' blob:; manifest-src 'self'; connect-src 'self' blob: data: https://R2-BUCKET-HOSTNAME.example.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  X-Frame-Options: DENY
+  Cross-Origin-Opener-Policy: same-origin
+
+# --- Hashed build assets ----------------------------------------------------
+# Vite puts a content hash in every filename under /assets/, so the content at
+# a given URL never changes. Cache it for one year.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# --- The HTML entry point ---------------------------------------------------
+# The browser must revalidate index.html on each load. Otherwise a cached copy
+# will point at build assets that a later deploy removed.
+# Pages redirects /index.html to /, so both paths need the rule.
+/index.html
+  Cache-Control: no-cache
+
+/
+  Cache-Control: no-cache
