@@ -68,6 +68,10 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
 
     let frame = 0;
     let uploadedUid: string | undefined;
+    // The partner can arrive after the active series, so the upload has to
+    // happen again when it does. Without this the colors stay single-sequence
+    // until the reader clicks another series.
+    let uploadedPartnerUid: string | undefined;
 
     const draw = () => {
       const state = useStudy.getState();
@@ -82,9 +86,14 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
 
       // Uploading a volume is the one expensive step. Do it when the series
       // changes, not on every frame.
-      if (uploadedUid !== series.summary.seriesInstanceUid) {
-        scene.setVolume(series.volume);
-        uploadedUid = series.summary.seriesInstanceUid;
+      const activeUid = series.summary.seriesInstanceUid;
+      const partner =
+        state.pair &&
+        (state.pair.t1.seriesInstanceUid === activeUid ? state.pair.fatsat : state.pair.t1);
+      if (uploadedUid !== activeUid || uploadedPartnerUid !== partner?.seriesInstanceUid) {
+        scene.setVolume(series.volume, state.pair);
+        uploadedUid = activeUid;
+        uploadedPartnerUid = partner?.seriesInstanceUid;
       }
 
       const panes = layout(width, height);

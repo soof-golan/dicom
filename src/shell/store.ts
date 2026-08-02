@@ -8,8 +8,27 @@ import { create } from "zustand";
 import type { Vec3 } from "../core/geometry/vec3.ts";
 import type { PlaneId } from "../core/view/planes.ts";
 import { defaultWindow, patientBounds } from "../core/view/planes.ts";
+import { findSequencePair, type SequencePair } from "../core/tissue/sequence.ts";
 import type { LoadedSeries } from "./loader/loadStudy.ts";
 import type { ViewerState } from "./viewer/VolumeScene.ts";
+
+/**
+ * The partner for the active series, from everything loaded so far.
+ *
+ * Series arrive one at a time, so this runs again on each arrival. A T1 that
+ * loads after the fat-saturated series must still find its partner.
+ */
+function pairFor(
+  series: readonly LoadedSeries[],
+  activeUid: string | undefined,
+): SequencePair | undefined {
+  const active = series.find((entry) => entry.summary.seriesInstanceUid === activeUid);
+  if (!active) return undefined;
+  return findSequencePair(
+    active.volume,
+    series.map((entry) => entry.volume),
+  );
+}
 
 export type LoadStatus = "empty" | "loading" | "ready" | "error";
 
@@ -61,6 +80,14 @@ interface StudyStore {
   readonly error?: string;
   readonly series: readonly LoadedSeries[];
   readonly activeUid?: string;
+  /**
+   * The T1 and fat-saturated partner that name tissue for the active series.
+   *
+   * It is stored, not derived at draw time, because the answer changes only
+   * when the series list or the active series changes, and the legend has to
+   * show which partner was chosen.
+   */
+  readonly pair?: SequencePair;
   readonly skipped: readonly { name: string; reason: string }[];
   readonly view: ViewerState;
   /** The view that a double click on a slider returns to. */
@@ -100,6 +127,7 @@ export const useStudy = create<StudyStore>((set, get) => ({
       series: [],
       skipped: [],
       activeUid: undefined,
+      pair: undefined,
       progress: { done: 0, total: 0, stage: "Reading files" },
     }),
 
@@ -109,12 +137,14 @@ export const useStudy = create<StudyStore>((set, get) => ({
     const { series: existing, activeUid } = get();
     const next = [...existing, series];
     // The first series to arrive becomes the active one, and it decides the
-    // cursor and the window. Later ones only join the list.
+    // cursor and the window. Later ones only join the list, but any of them can
+    // be the partner that names tissue, so the pair is looked for again.
     if (activeUid !== undefined) {
-      set({ series: next });
+      set({ series: next, pair: pairFor(next, activeUid) });
       return;
     }
-    set({ series: next, activeUid: series.summary.seriesInstanceUid, ...viewFor(series) });
+    const uid = series.summary.seriesInstanceUid;
+    set({ series: next, activeUid: uid, pair: pairFor(next, uid), ...viewFor(series) });
   },
 
   addSkipped: (name, reason) => set({ skipped: [...get().skipped, { name, reason }] }),
@@ -124,9 +154,10 @@ export const useStudy = create<StudyStore>((set, get) => ({
   failLoad: (reason) => set({ status: "error", error: reason }),
 
   selectSeries: (uid) => {
-    const series = get().series.find((entry) => entry.summary.seriesInstanceUid === uid);
+    const all = get().series;
+    const series = all.find((entry) => entry.summary.seriesInstanceUid === uid);
     if (!series) return;
-    set({ activeUid: uid, ...viewFor(series) });
+    set({ activeUid: uid, pair: pairFor(all, uid), ...viewFor(series) });
   },
 
   patchView: (patch) => set({ view: { ...get().view, ...patch } }),
@@ -159,6 +190,7 @@ export const useStudy = create<StudyStore>((set, get) => ({
       series: [],
       skipped: [],
       activeUid: undefined,
+      pair: undefined,
       error: undefined,
       view: INITIAL_VIEW,
       defaults: INITIAL_VIEW,

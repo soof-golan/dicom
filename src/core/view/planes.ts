@@ -218,10 +218,27 @@ export function clampToBounds(bounds: Bounds, point: Vec3): Vec3 {
  * half percent is dropped because a few very bright voxels, from fat or from a
  * flow artifact, would otherwise darken everything else.
  */
-export function autoWindow(volume: Volume, sampleStride = 7): { center: number; width: number } {
+/**
+ * Where most of the signal sits, as a fraction of the stored range.
+ *
+ * MRI signal is not calibrated. One sequence can peak at 900 and another at
+ * 4000 for the same tissue, and both carry a thin bright tail from noise and
+ * flowing blood. So the lowest and highest stored values say almost nothing
+ * about where tissue sits, and anything scaled by them lands too low.
+ *
+ * The percentiles say it instead. The result is 0 to 1 across the stored
+ * range, which is the same unit the GPU texture holds, so the shader can use
+ * it without any further conversion.
+ */
+export function percentileRange(
+  volume: Volume,
+  lowFraction = 0.01,
+  highFraction = 0.995,
+  sampleStride = 7,
+): { low: number; high: number } {
   const { min, max } = volume.valueRange;
   const span = max - min;
-  if (span <= 0) return { center: min, width: 1 };
+  if (span <= 0) return { low: 0, high: 1 };
 
   const BINS = 1024;
   const histogram = new Uint32Array(BINS);
@@ -236,17 +253,26 @@ export function autoWindow(volume: Volume, sampleStride = 7): { center: number; 
     let target = counted * fraction;
     for (let bin = 0; bin < BINS; bin += 1) {
       target -= histogram[bin]!;
-      if (target <= 0) return min + bin / scale;
+      if (target <= 0) return bin / (BINS - 1);
     }
-    return max;
+    return 1;
   };
 
-  const low = at(0.01);
-  const high = at(0.995);
-  const toValue = (stored: number): number =>
-    stored * volume.rescaleSlope + volume.rescaleIntercept;
-  const width = Math.max(toValue(high) - toValue(low), 1);
-  return { center: toValue(low) + width / 2, width };
+  const low = at(lowFraction);
+  const high = at(highFraction);
+  return { low, high: Math.max(high, low + 1e-4) };
+}
+
+export function autoWindow(volume: Volume, sampleStride = 7): { center: number; width: number } {
+  const { min, max } = volume.valueRange;
+  const span = max - min;
+  if (span <= 0) return { center: min, width: 1 };
+
+  const fraction = percentileRange(volume, 0.01, 0.995, sampleStride);
+  const toValue = (normalized: number): number =>
+    (min + normalized * span) * volume.rescaleSlope + volume.rescaleIntercept;
+  const width = Math.max(toValue(fraction.high) - toValue(fraction.low), 1);
+  return { center: toValue(fraction.low) + width / 2, width };
 }
 
 /**

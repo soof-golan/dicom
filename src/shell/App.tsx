@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { TISSUE_INFO, TISSUE_ORDER } from "../core/tissue/classify.ts";
 import { PLANE_IDS, standardPlane, type PlaneId } from "../core/view/planes.ts";
 import { loadStudy, readDataTransfer, readDevStudy, readFiles } from "./loader/loadStudy.ts";
 import type { StudySource } from "./loader/messages.ts";
@@ -240,6 +241,7 @@ function Controls() {
         onReset={() => void setParams({ tissue: null })}
         format={(v) => `${Math.round(v * 100)}%`}
       />
+      <TissueLegend />
       <Slider
         label="Slab thickness"
         value={view.slabThickness}
@@ -283,6 +285,67 @@ function Controls() {
       >
         Restore every setting
       </button>
+    </div>
+  );
+}
+
+/**
+ * What the colors mean, and how much to trust them.
+ *
+ * The legend states which two series named the tissue. A reader who does not
+ * know that cannot judge the colors, and this classifier reads signal, not
+ * anatomy, so that judgement is the whole safeguard.
+ */
+function TissueLegend() {
+  const pair = useStudy((state) => state.pair);
+  const series = useStudy(activeSeries);
+  const tissueMix = useStudy((state) => state.view.tissueMix);
+  if (tissueMix <= 0 || !series) return null;
+
+  const classes = pair ? TISSUE_ORDER : (["dark", "muscle", "fat", "fluid"] as const);
+
+  return (
+    <div className="rounded border border-neutral-800 p-2">
+      {pair ? (
+        <p className="text-[11px] text-neutral-400">
+          From <span className="font-mono text-neutral-300">{pair.t1.description}</span> and{" "}
+          <span className="font-mono text-neutral-300">{pair.fatsat.description}</span>.
+        </p>
+      ) : (
+        <p className="text-[11px] text-amber-400/80">
+          One sequence only. Fat and fluid cannot be told apart, so the colors are coarse and fade
+          where the signal is unclear.
+        </p>
+      )}
+      {pair?.oblique && (
+        <p className="mt-1 text-[11px] text-amber-400/80">
+          The two series were cut at different angles, so the partner is read through its thick
+          direction.
+        </p>
+      )}
+
+      <ul className="mt-2 space-y-1">
+        {classes.map((id) => (
+          <li key={id} className="flex items-start gap-2" title={TISSUE_INFO[id].covers}>
+            <span
+              className="mt-0.5 size-2.5 shrink-0 rounded-sm"
+              style={{
+                backgroundColor: `rgb(${TISSUE_INFO[id].color
+                  .map((c) => Math.round(c * 255))
+                  .join(" ")})`,
+              }}
+            />
+            <span className="text-[11px] leading-tight text-neutral-400">
+              {TISSUE_INFO[id].name}
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      <p className="mt-2 text-[10px] leading-relaxed text-neutral-600">
+        Colors come from signal strength, not from anatomy. A gray pixel is one the classifier would
+        not name.
+      </p>
     </div>
   );
 }

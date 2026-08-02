@@ -33,6 +33,7 @@ import {
   type PlaneId,
 } from "../../core/view/planes.ts";
 import type { Vec3 } from "../../core/geometry/vec3.ts";
+import { readSequenceKind, type SequencePair } from "../../core/tissue/sequence.ts";
 import { PLANE_FRAGMENT, PLANE_VERTEX, VOLUME_FRAGMENT, VOLUME_VERTEX } from "./shaders.ts";
 import { createVolumeTexture, type VolumeTexture } from "./volumeTexture.ts";
 import type { Volume } from "../../core/volume/build.ts";
@@ -79,7 +80,20 @@ export interface ViewerState {
   readonly invert: boolean;
 }
 
+/** The uniforms that name tissue. Both materials carry the same set. */
+const TISSUE_UNIFORMS = () => ({
+  uCompanion: { value: null },
+  uCompanionDims: { value: new Vector3(1, 1, 1) },
+  uPatientToCompanion: { value: new Matrix4() },
+  uHasCompanion: { value: 0 },
+  uActiveIsT1: { value: 0 },
+  uActiveIsFatSat: { value: 0 },
+  uSignalRange: { value: new Vector2(0, 1) },
+  uCompanionRange: { value: new Vector2(0, 1) },
+});
+
 const PLANE_UNIFORMS = () => ({
+  ...TISSUE_UNIFORMS(),
   uVolume: { value: null },
   uDims: { value: new Vector3() },
   uStoredScale: { value: 1 },
@@ -102,6 +116,7 @@ const PLANE_UNIFORMS = () => ({
 });
 
 const VOLUME_UNIFORMS = () => ({
+  ...TISSUE_UNIFORMS(),
   uVolume: { value: null },
   uDims: { value: new Vector3() },
   uStoredScale: { value: 1 },
@@ -159,6 +174,33 @@ export class VolumeScene {
   private bounds?: Bounds;
   readonly cube = new ViewCube();
 
+  /**
+   * Uploaded volumes, by series.
+   *
+   * Switching between the T1 and the fat-saturated series swaps which one is
+   * active and which one is the partner. Both stay on the GPU across that swap,
+   * so the switch costs nothing. Nothing else is kept: a volume can be hundreds
+   * of megabytes, and two is the most that any one view needs.
+   */
+  private readonly uploaded = new Map<string, VolumeTexture>();
+
+  private textureFor(volume: Volume): VolumeTexture {
+    const key = volume.seriesInstanceUid;
+    const existing = this.uploaded.get(key);
+    if (existing) return existing;
+    const created = createVolumeTexture(volume);
+    this.uploaded.set(key, created);
+    return created;
+  }
+
+  private evictExcept(keep: readonly string[]): void {
+    for (const [key, texture] of this.uploaded) {
+      if (keep.includes(key)) continue;
+      texture.dispose();
+      this.uploaded.delete(key);
+    }
+  }
+
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
       canvas,
@@ -198,14 +240,33 @@ export class VolumeScene {
     return this.texture !== undefined;
   }
 
-  setVolume(volume: Volume): void {
-    this.texture?.dispose();
-    this.texture = createVolumeTexture(volume);
+  /**
+   * Show a series, and name tissue from its partner when the study has one.
+   *
+   * Without a partner the viewer still colors, from one sequence, and says so.
+   * One sequence cannot separate fat from fluid, and the classifier reports
+   * that by halving its confidence, which fades the color toward gray.
+   */
+  setVolume(volume: Volume, pair?: SequencePair): void {
+    this.texture = this.textureFor(volume);
     this.bounds = patientBounds(volume);
+
+    const activeIsT1 = pair?.t1.seriesInstanceUid === volume.seriesInstanceUid;
+    const partner = pair ? (activeIsT1 ? pair.fatsat : pair.t1) : undefined;
+    // With no partner the active texture is bound in its place. A sampler that
+    // is never read still has to be complete, or the driver warns on every draw.
+    const companion = partner ? this.textureFor(partner) : this.texture;
+    this.evictExcept([volume.seriesInstanceUid, companion.volume.seriesInstanceUid]);
 
     const dims = new Vector3(volume.dims[0], volume.dims[1], volume.dims[2]);
     const patientToVoxel = toMatrix4(this.texture.patientToVoxel);
     const voxelToPatient = toMatrix4(volume.voxelToPatient);
+
+    const activeKind = readSequenceKind(volume.description);
+    const companionDims = new Vector3(...companion.volume.dims);
+    const patientToCompanion = toMatrix4(companion.patientToVoxel);
+    const ownRange = this.texture.signalRange;
+    const companionRange = companion.signalRange;
 
     for (const material of [this.planeMaterial, this.volumeMaterial]) {
       const u = material.uniforms;
@@ -216,6 +277,15 @@ export class VolumeScene {
       u.uSlope!.value = volume.rescaleSlope;
       u.uIntercept!.value = volume.rescaleIntercept;
       (u.uPatientToVoxel!.value as Matrix4).copy(patientToVoxel);
+
+      u.uCompanion!.value = companion.texture;
+      (u.uCompanionDims!.value as Vector3).copy(companionDims);
+      (u.uPatientToCompanion!.value as Matrix4).copy(patientToCompanion);
+      u.uHasCompanion!.value = partner ? 1 : 0;
+      u.uActiveIsT1!.value = activeKind === "t1" ? 1 : 0;
+      u.uActiveIsFatSat!.value = activeKind === "fatsat" ? 1 : 0;
+      (u.uSignalRange!.value as Vector2).set(ownRange.low, ownRange.high);
+      (u.uCompanionRange!.value as Vector2).set(companionRange.low, companionRange.high);
       material.needsUpdate = true;
     }
     (this.volumeMaterial.uniforms.uVoxelToPatient!.value as Matrix4).copy(voxelToPatient);
@@ -361,7 +431,8 @@ export class VolumeScene {
 
   dispose(): void {
     this.cube.dispose();
-    this.texture?.dispose();
+    this.evictExcept([]);
+    this.texture = undefined;
     this.planeMesh.geometry.dispose();
     this.planeMaterial.dispose();
     this.volumeMesh.geometry.dispose();

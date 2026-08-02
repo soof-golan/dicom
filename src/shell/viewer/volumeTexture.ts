@@ -10,6 +10,7 @@
 import { Data3DTexture, FloatType, LinearFilter, RedFormat, HalfFloatType } from "three";
 import type { Volume } from "../../core/volume/build.ts";
 import { invertAffine, type Mat4 } from "../../core/geometry/vec3.ts";
+import { percentileRange } from "../../core/view/planes.ts";
 
 const f32 = new Float32Array(1);
 const u32 = new Uint32Array(f32.buffer);
@@ -35,6 +36,13 @@ export interface VolumeTexture {
   /** Undoes the normalization: `stored = normalized * scale + bias`. */
   readonly storedScale: number;
   readonly storedBias: number;
+  /**
+   * Where tissue sits in this texture, from 0 to 1.
+   *
+   * The tissue classifier needs it, and it costs a pass over the data, so it is
+   * measured once here rather than every time the active series changes.
+   */
+  readonly signalRange: { readonly low: number; readonly high: number };
   readonly patientToVoxel: Mat4;
   readonly volume: Volume;
   dispose(): void;
@@ -64,6 +72,7 @@ export function createVolumeTexture(volume: Volume): VolumeTexture {
     texture,
     storedScale: span,
     storedBias: min,
+    signalRange: percentileRange(volume),
     patientToVoxel: invertAffine(volume.voxelToPatient),
     volume,
     dispose: () => texture.dispose(),
