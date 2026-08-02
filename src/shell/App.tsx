@@ -5,6 +5,7 @@ import type { StudySource } from "./loader/messages.ts";
 import { pageHref, usePage } from "./routes.ts";
 import { activeSeries, useStudy } from "./store.ts";
 import { Tutorial, useTutorial } from "./Tutorial.tsx";
+import { clearedForNewSeries, resolveDisplay, useDisplayParams } from "./viewState.ts";
 
 // three.js is the largest dependency by far, and a reader who has opened no
 // scan does not need it. The legal pages need none of the viewer at all.
@@ -103,6 +104,7 @@ function SeriesList() {
   const series = useStudy((state) => state.series);
   const activeUid = useStudy((state) => state.activeUid);
   const select = useStudy((state) => state.selectSeries);
+  const [, setDisplay] = useDisplayParams();
 
   return (
     <ul className="space-y-1">
@@ -112,7 +114,11 @@ function SeriesList() {
           <li key={summary.seriesInstanceUid}>
             <button
               type="button"
-              onClick={() => select(summary.seriesInstanceUid)}
+              onClick={() => {
+                // Brightness and contrast were measured from the old series.
+                void setDisplay(clearedForNewSeries());
+                select(summary.seriesInstanceUid);
+              }}
               className={`w-full rounded px-2 py-1.5 text-left text-xs transition-colors ${
                 active
                   ? "bg-sky-400/15 text-sky-200"
@@ -146,8 +152,9 @@ function Slider({
   min,
   max,
   step,
-  reset,
+  isDefault,
   onChange,
+  onReset,
   format,
 }: {
   label: string;
@@ -155,17 +162,17 @@ function Slider({
   min: number;
   max: number;
   step: number;
-  reset: number;
+  isDefault: boolean;
   onChange: (value: number) => void;
+  onReset: () => void;
   format?: (value: number) => string;
 }) {
   const clamped = Math.min(Math.max(value, min), max);
-  const atDefault = Math.abs(value - reset) < step / 2;
   return (
     <label className="block" title="Double click to restore the starting value">
       <span className="flex justify-between text-[11px] text-neutral-400">
         {label}
-        <span className={atDefault ? "font-mono text-neutral-600" : "font-mono text-sky-300/80"}>
+        <span className={isDefault ? "font-mono text-neutral-600" : "font-mono text-sky-300/80"}>
           {format?.(value) ?? value.toFixed(0)}
         </span>
       </span>
@@ -176,7 +183,7 @@ function Slider({
         step={step}
         value={clamped}
         onChange={(event) => onChange(Number(event.target.value))}
-        onDoubleClick={() => onChange(reset)}
+        onDoubleClick={onReset}
         className="mt-1 w-full accent-sky-400"
       />
     </label>
@@ -185,14 +192,19 @@ function Slider({
 
 function Controls() {
   const view = useStudy((state) => state.view);
-  const defaults = useStudy((state) => state.defaults);
   const limits = useStudy((state) => state.limits);
-  const patch = useStudy((state) => state.patchView);
-  const resetView = useStudy((state) => state.resetView);
-  const toggleClip = useStudy((state) => state.toggleClip);
-  const flipClip = useStudy((state) => state.flipClip);
+  const [params, setParams] = useDisplayParams();
 
   const contrastStep = Math.max(1, Math.round(limits.windowWidth[1] / 400));
+  const clearAll = () =>
+    void setParams({
+      wc: null,
+      ww: null,
+      tissue: null,
+      slab: null,
+      density: null,
+      threshold: null,
+    });
 
   return (
     <div className="space-y-4">
@@ -202,8 +214,9 @@ function Controls() {
         min={limits.windowCenter[0]}
         max={limits.windowCenter[1]}
         step={contrastStep}
-        reset={defaults.windowCenter}
-        onChange={(windowCenter) => patch({ windowCenter })}
+        isDefault={params.wc === null}
+        onChange={(wc) => void setParams({ wc })}
+        onReset={() => void setParams({ wc: null })}
       />
       <Slider
         label="Contrast"
@@ -211,8 +224,9 @@ function Controls() {
         min={limits.windowWidth[0]}
         max={limits.windowWidth[1]}
         step={contrastStep}
-        reset={defaults.windowWidth}
-        onChange={(windowWidth) => patch({ windowWidth })}
+        isDefault={params.ww === null}
+        onChange={(ww) => void setParams({ ww })}
+        onReset={() => void setParams({ ww: null })}
       />
       <Slider
         label="Tissue color"
@@ -220,8 +234,9 @@ function Controls() {
         min={0}
         max={1}
         step={0.01}
-        reset={defaults.tissueMix}
-        onChange={(tissueMix) => patch({ tissueMix })}
+        isDefault={params.tissue === null}
+        onChange={(tissue) => void setParams({ tissue })}
+        onReset={() => void setParams({ tissue: null })}
         format={(v) => `${Math.round(v * 100)}%`}
       />
       <Slider
@@ -230,8 +245,9 @@ function Controls() {
         min={0}
         max={40}
         step={0.5}
-        reset={defaults.slabThickness}
-        onChange={(slabThickness) => patch({ slabThickness })}
+        isDefault={params.slab === null}
+        onChange={(slab) => void setParams({ slab })}
+        onReset={() => void setParams({ slab: null })}
         format={(v) => (v < 0.1 ? "off" : `${v.toFixed(1)} mm`)}
       />
       <Slider
@@ -240,8 +256,9 @@ function Controls() {
         min={0.2}
         max={12}
         step={0.1}
-        reset={defaults.opacity}
-        onChange={(opacity) => patch({ opacity })}
+        isDefault={params.density === null}
+        onChange={(density) => void setParams({ density })}
+        onReset={() => void setParams({ density: null })}
         format={(v) => v.toFixed(1)}
       />
       <Slider
@@ -250,48 +267,76 @@ function Controls() {
         min={0}
         max={0.9}
         step={0.01}
-        reset={defaults.threshold}
-        onChange={(threshold) => patch({ threshold })}
+        isDefault={params.threshold === null}
+        onChange={(threshold) => void setParams({ threshold })}
+        onReset={() => void setParams({ threshold: null })}
         format={(v) => `${Math.round(v * 100)}%`}
       />
 
-      <div>
-        <p className="mb-1.5 text-[11px] text-neutral-400">Cut the 3D view</p>
-        <div className="grid grid-cols-3 gap-1">
-          {PLANE_IDS.map((id: PlaneId) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => (view.clip[id] ? flipClip(id) : toggleClip(id))}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                toggleClip(id);
-              }}
-              className={`rounded border px-1 py-1 text-[10px] capitalize transition-colors ${
-                view.clip[id]
-                  ? "border-sky-400/60 bg-sky-400/15 text-sky-200"
-                  : "border-neutral-800 text-neutral-500 hover:border-neutral-600"
-              }`}
-            >
-              {id}
-              {view.clip[id] ? (view.clipFlip[id] ? " \u2193" : " \u2191") : ""}
-            </button>
-          ))}
-        </div>
-        <p className="mt-1 text-[10px] text-neutral-600">
-          Click to cut, click again to flip. Right-click to clear.
-        </p>
-      </div>
+      <ClipControls />
 
       <button
         type="button"
-        onClick={resetView}
+        onClick={clearAll}
         className="w-full rounded border border-neutral-800 px-2 py-1.5 text-[11px] text-neutral-400 transition-colors hover:border-neutral-600 hover:text-neutral-200"
       >
         Restore every setting
       </button>
     </div>
   );
+}
+
+function ClipControls() {
+  const view = useStudy((state) => state.view);
+  const toggleClip = useStudy((state) => state.toggleClip);
+  const flipClip = useStudy((state) => state.flipClip);
+
+  return (
+    <div>
+      <p className="mb-1.5 text-[11px] text-neutral-400">Cut the 3D view</p>
+      <div className="grid grid-cols-3 gap-1">
+        {PLANE_IDS.map((id: PlaneId) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => (view.clip[id] ? flipClip(id) : toggleClip(id))}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              toggleClip(id);
+            }}
+            className={`rounded border px-1 py-1 text-[10px] capitalize transition-colors ${
+              view.clip[id]
+                ? "border-sky-400/60 bg-sky-400/15 text-sky-200"
+                : "border-neutral-800 text-neutral-500 hover:border-neutral-600"
+            }`}
+          >
+            {id}
+            {view.clip[id] ? (view.clipFlip[id] ? " \u2193" : " \u2191") : ""}
+          </button>
+        ))}
+      </div>
+      <p className="mt-1 text-[10px] text-neutral-600">
+        Click to cut, click again to flip. Right-click to clear.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Keep the store in step with the address bar.
+ *
+ * The URL decides these six settings. The renderer reads the store, not React,
+ * so the values have to reach it. Nothing writes back the other way, so there
+ * is no loop.
+ */
+function useDisplayFromUrl(): void {
+  const [params] = useDisplayParams();
+  const defaults = useStudy((state) => state.defaults);
+  const patch = useStudy((state) => state.patchView);
+
+  useEffect(() => {
+    patch(resolveDisplay(params, defaults));
+  }, [params, defaults, patch]);
 }
 
 /** Direction letters drawn over each cut, the way a radiology station shows them. */
@@ -389,6 +434,7 @@ export function App() {
   const error = useStudy((state) => state.error);
   const [page] = usePage();
   const tutorial = useTutorial();
+  useDisplayFromUrl();
 
   // In development, the server can offer a study so the viewer has data at once.
   // React runs an effect twice under StrictMode, so this guard keeps one load.
