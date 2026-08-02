@@ -7,13 +7,18 @@ import { buildVolume } from "../volume/build.ts";
 import {
   classifyPair,
   classifySingle,
-  DEFAULT_THRESHOLDS,
+  FATSAT_THRESHOLDS,
+  T1_THRESHOLDS,
   tally,
   TISSUE_INFO,
   TISSUE_ORDER,
   type TissueClass,
 } from "./classify.ts";
 import { createSampler, sharesFrameOfReference, overlaps, trilinear } from "./resample.ts";
+import { MUSCLE_LEVEL } from "./scale.ts";
+
+/** A signal, as a multiple of muscle. This is the scale the classifier reads. */
+const times = (muscles: number) => muscles * MUSCLE_LEVEL;
 
 const volumeOf = (name: (typeof SERIES_NAMES)[number]) =>
   buildVolume(readSeries(name).map((bytes) => readInstance(parseDicom(bytes))));
@@ -26,21 +31,42 @@ describe("classifyPair", () => {
     expect(classifyPair({ t1: 0.75, pdfs: 0.15 }).tissue).toBe("fat");
   });
 
-  it("calls the brightest fat marrow", () => {
-    expect(classifyPair({ t1: 0.9, pdfs: 0.12 }).tissue).toBe("marrow");
+  it("reports fatty marrow and subcutaneous fat as the one class they are", () => {
+    // Both are fat, and no signal separates them. A brightness cut on T1 was
+    // measured against the reference elbow and told nothing about the place.
+    expect(classifyPair({ t1: times(2.6), pdfs: times(0.4) }).tissue).toBe("fat");
+    expect(TISSUE_ORDER).not.toContain("marrow");
+    expect(TISSUE_INFO.fat.covers).toMatch(/no signal separates/i);
+  });
+
+  it("calls fat any tissue the fat pulse removes, even at muscle brightness", () => {
+    // A surface coil leaves far fat no brighter than near muscle on T1. Only
+    // the drop under fat saturation names it, and nothing but fat drops.
+    expect(classifyPair({ t1: times(1.0), pdfs: times(0.4) }).tissue).toBe("fat");
   });
 
   it("calls dark T1 with bright fat-sat fluid", () => {
-    expect(classifyPair({ t1: 0.15, pdfs: 0.85 }).tissue).toBe("fluid");
+    expect(classifyPair({ t1: times(0.5), pdfs: times(3.0) }).tissue).toBe("fluid");
   });
 
   it("calls middle T1 with bright fat-sat edema", () => {
     // This is the signal of a bone bruise, and it is invisible on T1 alone.
-    expect(classifyPair({ t1: 0.45, pdfs: 0.8 }).tissue).toBe("edema");
+    expect(classifyPair({ t1: times(1.0), pdfs: times(2.8) }).tissue).toBe("edema");
+  });
+
+  it("refuses to call bright on both edema, because edema is water", () => {
+    // Water is never bright on T1. This pair means the fat pulse failed there,
+    // or that blood is breaking down. Calling it edema flooded the arm pink.
+    expect(classifyPair({ t1: times(2.0), pdfs: times(3.0) }).tissue).toBe("unknown");
+  });
+
+  it("needs water far brighter than muscle before it says edema", () => {
+    // Ordinary tissue reaches twice muscle on a fat-saturated sequence.
+    expect(classifyPair({ t1: times(1.0), pdfs: times(2.0) }).tissue).toBe("muscle");
   });
 
   it("calls middle on both muscle", () => {
-    expect(classifyPair({ t1: 0.45, pdfs: 0.4 }).tissue).toBe("muscle");
+    expect(classifyPair({ t1: times(1.0), pdfs: times(1.0) }).tissue).toBe("muscle");
   });
 
   it("groups cortical bone, tendon, and ligament as one dark class", () => {
@@ -60,9 +86,15 @@ describe("classifyPair", () => {
   });
 
   it("reports low confidence at a boundary", () => {
-    const edge = classifyPair({ t1: DEFAULT_THRESHOLDS.low, pdfs: DEFAULT_THRESHOLDS.low });
-    const clear = classifyPair({ t1: 0.45, pdfs: 0.4 });
+    const edge = classifyPair({ t1: T1_THRESHOLDS.low, pdfs: FATSAT_THRESHOLDS.low });
+    const clear = classifyPair({ t1: times(1.0), pdfs: times(1.0) });
     expect(edge.confidence).toBeLessThan(clear.confidence);
+  });
+
+  it("gives each sequence its own band edges, because their contrast differs", () => {
+    // Fat reaches about 1.4 times muscle on T1. Water reaches three times
+    // muscle after fat saturation. One edge for both floods the arm with edema.
+    expect(FATSAT_THRESHOLDS.high).toBeGreaterThan(T1_THRESHOLDS.high * 1.5);
   });
 });
 
@@ -198,6 +230,6 @@ describe("classifying real voxels from two real sequences", () => {
     expect(classified).toBeGreaterThan(0);
     // Dark structures and muscle both appear in any elbow slice.
     expect(counts.dark).toBeGreaterThan(0);
-    expect(counts.muscle + counts.fat + counts.marrow).toBeGreaterThan(0);
+    expect(counts.muscle + counts.fat).toBeGreaterThan(0);
   });
 });

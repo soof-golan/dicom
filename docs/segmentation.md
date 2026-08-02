@@ -68,6 +68,48 @@ Two repos, four weight formats, both providers. The fault is in the export of
 the classification head, not in the quantization and not in the provider.
 CLIPSeg has no classification head, so it has no such node.
 
+### MedSigLIP, and why it is not measured yet
+
+CLIPSeg learned from photographs. Its training set holds no MRI, which is the
+likely cause of the low scores on tissue names in section 6. MedSigLIP
+(`google/medsiglip-448`) learned from medical image and text pairs, and those
+pairs include slices of CT and MRI volumes with their radiology reports.
+
+MedSigLIP cannot replace CLIPSeg on its own. It has no mask decoder. It only
+scores how well a picture and a phrase agree. The composition that works
+needs no training:
+
+1. SAM makes candidate masks, from a click or from a grid of points.
+2. Cut the picture to each candidate.
+3. Score each cut against the phrase with MedSigLIP.
+4. Keep the best score.
+
+The runtime is ready. transformers.js 4.2.0, the pinned version, already
+exports `SiglipModel`, `SiglipTextModel`, `SiglipVisionModel`,
+`SiglipImageProcessor` and `SiglipTokenizer`, so no new dependency is needed.
+
+The weights are not available to this project. On 2026-08-02 the repository
+answered:
+
+```
+Access to model google/medsiglip-448 is restricted and you are not in the
+authorized list.
+```
+
+The account is signed in, and the metadata reads `gated: "auto"`. An `auto`
+gate needs no human review: one visit to the model page to accept the Health
+AI Developer Foundations terms opens it. Until an authorized account runs the
+export, there are no numbers, and nothing here must be treated as a result.
+
+Three conditions apply before any MedSigLIP weight is served from our origin,
+because the license is Health AI Developer Foundations and not Apache-2.0:
+
+- Pass on the use restrictions.
+- Ship a NOTICE file.
+- Mark each modified file as modified. A quantized export is a modification.
+
+Cloudflare refuses a single asset above 25 MiB, so the weights must go to R2.
+
 ### License
 
 The SAM 3 weights carry the SAM License, not Apache-2.0 or MIT. The license
