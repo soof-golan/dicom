@@ -415,9 +415,27 @@ const MIN_MARROW_FOR_BONE = 20_000;
  * air, so a fill that moved through fat alone would start nowhere and would
  * call every fat voxel in the arm marrow.
  *
- * This restores the landmark that the rules need. It is geometry, not signal,
- * and the same caution applies: a shell with a gap leaks, and then the marrow
- * behind it joins the outside and is not marked.
+ * This is geometry, not signal, and the same caution applies: a shell with a
+ * gap leaks, and then the marrow behind it joins the outside and is not marked.
+ *
+ * MEASURED, AND IT DOES NOT WORK ON THIS STUDY. The signal rule that this
+ * replaced found 27 cm3 of marrow. Enclosure finds 1.2 cm3, which is a
+ * twentieth of it, so the wall leaks nearly everywhere.
+ *
+ * A grid with cubic voxels does not repair it. On the fused volume enclosure
+ * finds NOTHING at all, and growing the dark wall by one or two voxels does not
+ * help on either grid. It makes the native result worse, from 1.2 to 0.3 cm3,
+ * because the growth eats the thin pockets it was meant to seal.
+ *
+ * The reason is that no fusion can add what was never measured. The study holds
+ * three fat-saturated orientations but only ONE T1, and `dark` needs both
+ * sequences to be low. So the dark class carries the 3.3 mm step of the T1
+ * everywhere, whatever grid it is read on. Reading that T1 at 0.71 mm only
+ * interpolates a ramp across the cortex, and the middle of the ramp is not
+ * dark, which opens the wall in every direction at once.
+ *
+ * Closing the wall needs a second T1 orientation, or a sequence that resolves
+ * cortex through the slice. This study has neither.
  */
 export function markMarrow(dims: readonly [number, number, number], tissue: Uint8Array): number {
   const [nx, ny, nz] = dims;
