@@ -92,6 +92,15 @@ export function ortAssets(): Plugin {
     },
 
     generateBundle() {
+      // The bundler follows a `new URL(...)` inside the runtime and emits its
+      // own hashed copy of one binary, about 22 MiB. Deleting it saves that
+      // space, and the shell never asks for it, because it points the runtime
+      // at `/ort/` instead. It is left in place anyway: the reference to it
+      // stays in the built code, and proving that branch unreachable needs a
+      // full production run. A wrong guess breaks segmentation in production
+      // only, which is the worst place to learn about it. Static bytes on a CDN
+      // are cheaper than that risk.
+
       for (const file of binaries()) {
         this.emitFile({
           type: "asset",

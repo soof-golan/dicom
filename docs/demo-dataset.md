@@ -494,13 +494,22 @@ purge the cache. The cached responses hold the old CORS headers.
 
 The code in this repository is MIT. See [LICENSE](../LICENSE).
 
-The imaging data is a separate work with a separate license. The data is offered
-under CC0 1.0 or MIT.
+The imaging data is a separate work with a separate license. It is dedicated to
+the public domain under **CC0 1.0 Universal**. See
+[LICENSE-DATA](../LICENSE-DATA) for the dedication and the full legal code.
 
-**Open point: the owner must decide which of the two applies.** CC0 puts the
-data in the public domain and asks nothing of a user. MIT keeps a notice
-requirement, which is unusual for a dataset. Pick one, then record it here and
-in a `LICENSE` file next to the data in the bucket.
+CC0 asks nothing of you. You can copy the study, change it, and use it for any
+purpose, including a commercial one, without a notice and without permission.
 
-Until the owner decides, treat the imaging data as unlicensed and do not
-redistribute it.
+Two facts still apply, and neither is a license condition.
+
+The patient name is in the DICOM headers, kept by the choice of the data
+subject. So this is real medical imaging that is not fully de-identified, and it
+names a living person. Read "What the files hold" above before you redistribute
+it.
+
+The scan shows a real injury. Do not use it to make a medical decision about
+anyone, including the person in it.
+
+Upload `LICENSE-DATA` to the bucket beside the data, so the dedication travels
+with the files.

@@ -9,7 +9,8 @@
     "dev": "vp dev",
     "build": "vp build",
     "preview": "vp preview",
-    "prepare": "vp config"
+    "prepare": "vp config",
+    "check:assets": "node scripts/check-asset-sizes.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

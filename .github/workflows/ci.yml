@@ -36,3 +36,12 @@ jobs:
 
       - name: Test
         run: vp test --run
+
+      # Cloudflare refuses an asset larger than 25 MiB. The ONNX runtime sits
+      # just under it, so a dependency upgrade can break the deploy. Catch that
+      # here, not in production.
+      - name: Build
+        run: vp build
+
+      - name: Check asset sizes
+        run: node scripts/check-asset-sizes.ts
