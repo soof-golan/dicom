@@ -47,6 +47,7 @@ function makeVolume(options: {
     description: "test",
     modality: "MR",
     seriesInstanceUid: "1.2.3",
+    frameOfReferenceUid: "1.2.3.4",
     warnings: [],
   };
 }
