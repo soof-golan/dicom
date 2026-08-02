@@ -390,6 +390,7 @@ A walk that never stops draws a confident tube of nothing. `judgeSlice` in
 | The mask is empty                              | `vanished`  |
 | The mask is under 24 pixels                    | `collapsed` |
 | The mask is over 2.5 times the slice before    | `leaked`    |
+| The mask is under 0.4 of the slice before      | `collapsed` |
 | The mask is over 3 times the slice you clicked | `drifted`   |
 | The model rates its own mask under 0.5         | `low-score` |
 | 32 slices on this side                         | `limit`     |

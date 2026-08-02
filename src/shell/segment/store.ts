@@ -299,8 +299,15 @@ export const useSegment = create<SegmentStore>((set, get) => {
    * Walk out from a seed slice, one slice at a time, on one side.
    *
    * The prompt for each new slice comes from the mask of the slice before it:
-   * a point well inside it, and a box a little wider than it. Nothing else
-   * carries over, because the model reads a new picture each time.
+   * a point well inside it, and, when the seed had a box, a box a little wider
+   * than it. Nothing else carries over, because the model reads a new picture
+   * each time.
+   *
+   * The walk keeps the kind of prompt that the seed used. SAM returns three
+   * candidates and the prompt decides which one wins, so a click seed followed
+   * by a box prompt jumps to a different candidate on the very first slice: on
+   * the fused volume a 45,658 pixel seed became 86,955 pixels in 0.94 mm.
+   * Measured 2026-08-02.
    */
   async function walk(
     objectId: string,
@@ -323,11 +330,13 @@ export const useSegment = create<SegmentStore>((set, get) => {
     let previousArea = seedArea;
     let kept = 0;
 
+    const wantsBox = seed.box !== undefined;
+
     for (const depth of depths) {
       if (cancelGrowth) return { cause: "limit", kept };
       const seedPoint = interiorPoint(previous);
-      const box = promptBox(previous, DEFAULT_GROWTH.boxMargin);
-      if (!seedPoint || !box) return { cause: "vanished", kept };
+      const bounds = promptBox(previous, DEFAULT_GROWTH.boxMargin);
+      if (!seedPoint || !bounds) return { cause: "vanished", kept };
 
       const cut: PromptCut = { ...seed, key: `${seed.key}|grown${depth.toFixed(3)}`, depth };
       const picture = pictureFor(volume, cut, currentWindow());
@@ -336,7 +345,9 @@ export const useSegment = create<SegmentStore>((set, get) => {
 
       const answer = await client!.decode(
         [{ kind: "point", x: seedPoint.x, y: seedPoint.y, positive: true }],
-        { kind: "box", x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1 },
+        wantsBox
+          ? { kind: "box", x0: bounds.x0, y0: bounds.y0, x1: bounds.x1, y1: bounds.y1 }
+          : undefined,
       );
       onSlice();
       if (!answer) return { cause: "vanished", kept };

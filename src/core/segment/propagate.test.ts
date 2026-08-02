@@ -71,6 +71,10 @@ describe("judgeSlice", () => {
     expect(judgeSlice(2000, 1000 * limits.driftRatio + 1, 0.9, limits, 1000)).toBe("drifted");
   });
 
+  it("stops a mask that fell away against the slice before it", () => {
+    expect(judgeSlice(36872, 5129, 0.9, limits, 45658)).toBe("collapsed");
+  });
+
   it("catches slow drift that every step test passes", () => {
     let area = 1000;
     let cause: StopCause | undefined;

@@ -39,6 +39,14 @@ export interface GrowthLimits {
   /** Stop when a slice covers more than this many times the slice before it. */
   readonly growthRatio: number;
   /**
+   * Stop when a slice covers less than this share of the slice before it.
+   *
+   * A structure that ends tapers over several slices. A mask that falls to a
+   * seventh of the slice before it in under a millimetre did not taper: the
+   * model lost the structure and found something else.
+   */
+  readonly shrinkRatio: number;
+  /**
    * Stop when a slice covers more than this many times the seed.
    *
    * A step test alone does not catch slow drift. A mask that grows 20% per
@@ -64,6 +72,7 @@ export const DEFAULT_GROWTH: GrowthLimits = {
   maxSlices: 32,
   minArea: 24,
   growthRatio: 2.5,
+  shrinkRatio: 0.4,
   driftRatio: 3,
   minScore: 0.5,
   boxMargin: 0.12,
@@ -85,6 +94,7 @@ export function judgeSlice(
   if (area === 0) return "vanished";
   if (area < limits.minArea) return "collapsed";
   if (previousArea > 0 && area > previousArea * limits.growthRatio) return "leaked";
+  if (previousArea > 0 && area < previousArea * limits.shrinkRatio) return "collapsed";
   if (seedArea > 0 && area > seedArea * limits.driftRatio) return "drifted";
   if (score < limits.minScore) return "low-score";
   return undefined;
