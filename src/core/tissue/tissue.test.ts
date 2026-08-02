@@ -112,8 +112,9 @@ describe("trilinear", () => {
   });
 
   it("returns a value between the two neighbours halfway along", () => {
-    const a = pdfs.data[0 * 64 * 64 + 0 * 64 + 10]!;
-    const b = pdfs.data[0 * 64 * 64 + 0 * 64 + 11]!;
+    // Row 0 of slice 0, so the index is just the column.
+    const a = pdfs.data[10]!;
+    const b = pdfs.data[11]!;
     const middle = trilinear(pdfs, [10.5, 0, 0])!;
     expect(middle).toBeGreaterThanOrEqual(Math.min(a, b));
     expect(middle).toBeLessThanOrEqual(Math.max(a, b));
