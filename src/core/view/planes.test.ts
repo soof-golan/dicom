@@ -2,11 +2,12 @@ import { describe, expect, it } from "vite-plus/test";
 import { readSeries } from "../dicom/fixtures.ts";
 import { readInstance } from "../dicom/instance.ts";
 import { parseDicom } from "../dicom/parse.ts";
-import { applyAffine, dot } from "../geometry/vec3.ts";
+import { applyAffine, dot, type Vec3 } from "../geometry/vec3.ts";
 import { buildVolume } from "../volume/build.ts";
 import {
   autoWindow,
   clampToBounds,
+  cursorInPlane,
   clipEquation,
   defaultWindow,
   patientBounds,
@@ -103,9 +104,51 @@ describe("standardPlane", () => {
     }
   });
 
-  it("centers the view on the cursor", () => {
-    const point = [1, 2, 3] as const;
-    expect(standardPlane(volume, "axial", point).origin).toEqual(point);
+  it("follows the cursor in depth only", () => {
+    const bounds = patientBounds(volume);
+    const moved: Vec3 = [bounds.center[0] + 20, bounds.center[1] - 15, bounds.center[2] + 5];
+    const plane = standardPlane(volume, "axial", moved);
+
+    // The cut moves to the depth of the cursor.
+    expect(dot(plane.origin, plane.normal)).toBeCloseTo(dot(moved, plane.normal), 6);
+    // The view stays where it was inside its own plane.
+    expect(dot(plane.origin, plane.u)).toBeCloseTo(dot(bounds.center, plane.u), 6);
+    expect(dot(plane.origin, plane.v)).toBeCloseTo(dot(bounds.center, plane.v), 6);
+  });
+
+  it("shifts the view when the user pans", () => {
+    const cursor = patientBounds(volume).center;
+    const still = standardPlane(volume, "axial", cursor);
+    const panned = standardPlane(volume, "axial", cursor, [7, -3]);
+    expect(dot(panned.origin, panned.u) - dot(still.origin, still.u)).toBeCloseTo(7, 6);
+    expect(dot(panned.origin, panned.v) - dot(still.origin, still.v)).toBeCloseTo(-3, 6);
+  });
+
+  it("keeps the cut depth when the user pans", () => {
+    const cursor = patientBounds(volume).center;
+    const still = standardPlane(volume, "axial", cursor);
+    const panned = standardPlane(volume, "axial", cursor, [7, -3]);
+    expect(dot(panned.origin, panned.normal)).toBeCloseTo(dot(still.origin, still.normal), 6);
+  });
+});
+
+describe("cursorInPlane", () => {
+  it("puts a cursor at the middle of its own cut", () => {
+    const cursor = patientBounds(volume).center;
+    const where = cursorInPlane(standardPlane(volume, "axial", cursor), cursor);
+    expect(where.x).toBeCloseTo(0, 6);
+    expect(where.y).toBeCloseTo(0, 6);
+  });
+
+  it("measures the offset as a fraction of the view", () => {
+    const bounds = patientBounds(volume);
+    const plane = standardPlane(volume, "axial", bounds.center);
+    const shifted: Vec3 = [
+      bounds.center[0] + plane.u[0] * plane.size[0] * 0.25,
+      bounds.center[1] + plane.u[1] * plane.size[0] * 0.25,
+      bounds.center[2] + plane.u[2] * plane.size[0] * 0.25,
+    ];
+    expect(cursorInPlane(plane, shifted).x).toBeCloseTo(0.25, 6);
   });
 });
 

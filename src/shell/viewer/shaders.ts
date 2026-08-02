@@ -92,6 +92,8 @@ uniform vec3 uPlaneV;
 uniform vec2 uPlaneSize;
 uniform float uThickness;
 uniform float uSlabSteps;
+uniform vec2 uCursorOffset;
+uniform vec2 uCrosshair;
 
 in vec2 vUv;
 out vec4 outColor;
@@ -126,7 +128,23 @@ void main() {
     outColor = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
-  outColor = vec4(shade(applyWindow(best)), 1.0);
+  vec3 color = shade(applyWindow(best));
+
+  // The crosshair marks the point that the other two cuts pass through.
+  if (uCrosshair.x > 0.5) {
+    vec2 here = vec2((vUv.x - 0.5) * uPlaneSize.x, (0.5 - vUv.y) * uPlaneSize.y);
+    vec2 fromCursor = abs(here - uCursorOffset);
+    float lineWidth = uCrosshair.y;
+    float gap = lineWidth * 6.0;
+    bool onLine =
+      (fromCursor.x < lineWidth && fromCursor.y > gap) ||
+      (fromCursor.y < lineWidth && fromCursor.x > gap);
+    bool onRing =
+      abs(length(fromCursor) - gap) < lineWidth;
+    if (onLine || onRing) color = mix(color, vec3(0.42, 0.78, 1.0), 0.75);
+  }
+
+  outColor = vec4(color, 1.0);
 }
 `;
 
@@ -157,6 +175,8 @@ uniform float uOpacity;
 uniform vec4 uClipPlanes[3];
 uniform float uClipEnabled[3];
 uniform float uLightStrength;
+uniform float uThreshold;
+uniform float uEdgeBoost;
 
 in vec3 vPatient;
 out vec4 outColor;
@@ -175,15 +195,19 @@ bool boxRange(vec3 origin, vec3 direction, out float tNear, out float tFar) {
   return tFar > max(tNear, 0.0);
 }
 
-// Central differences give a surface normal, which is what makes the render
-// read as a shape instead of a fog.
-vec3 gradientAt(vec3 voxel) {
+// Central differences on the windowed value. The direction is a surface normal,
+// which makes the render read as a shape instead of a fog. The length says how
+// fast the signal changes, which separates a boundary from the inside of a
+// muscle.
+vec4 gradientAt(vec3 voxel) {
   vec2 d = vec2(1.0, 0.0);
-  return normalize(vec3(
-    sampleValue(voxel + d.xyy) - sampleValue(voxel - d.xyy),
-    sampleValue(voxel + d.yxy) - sampleValue(voxel - d.yxy),
-    sampleValue(voxel + d.yyx) - sampleValue(voxel - d.yyx)
-  ) + 1e-6);
+  vec3 g = vec3(
+    applyWindow(sampleValue(voxel + d.xyy)) - applyWindow(sampleValue(voxel - d.xyy)),
+    applyWindow(sampleValue(voxel + d.yxy)) - applyWindow(sampleValue(voxel - d.yxy)),
+    applyWindow(sampleValue(voxel + d.yyx)) - applyWindow(sampleValue(voxel - d.yyx))
+  );
+  float size = length(g);
+  return vec4(size > 1e-5 ? g / size : vec3(0.0, 0.0, 1.0), size);
 }
 
 bool clipped(vec3 patient) {
@@ -219,15 +243,21 @@ void main() {
     if (clipped(patient)) continue;
 
     float gray = applyWindow(sampleValue(voxel));
-    if (gray <= 0.01) continue;
+    // Everything below the threshold is air, noise, or skin. Skipping it is what
+    // lets the eye reach the joint instead of stopping at the surface.
+    if (gray <= uThreshold) continue;
 
-    // Opacity rises faster than brightness, so faint tissue stays see-through.
-    float sampleAlpha = clamp(gray * gray * uOpacity * step, 0.0, 1.0);
+    vec4 gradient = gradientAt(voxel);
+
+    // Levoy's rule: a boundary is more opaque than the inside of a tissue. This
+    // is what turns a solid block into a structure you can see into.
+    float above = (gray - uThreshold) / max(1.0 - uThreshold, 1e-4);
+    float boundary = mix(1.0, clamp(gradient.w * 12.0, 0.0, 1.0), uEdgeBoost);
+    float sampleAlpha = clamp(above * above * boundary * uOpacity * step, 0.0, 1.0);
+    if (sampleAlpha <= 0.0005) continue;
+
     vec3 sampleColor = shade(gray);
-
-    vec3 normal = gradientAt(voxel);
-    vec3 toEye = -direction;
-    float lambert = abs(dot(normal, toEye));
+    float lambert = abs(dot(gradient.xyz, -direction));
     sampleColor *= mix(1.0, 0.35 + 0.65 * lambert, uLightStrength);
 
     color += (1.0 - alpha) * sampleAlpha * sampleColor;

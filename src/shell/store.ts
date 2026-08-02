@@ -26,11 +26,15 @@ const INITIAL_VIEW: ViewerState = {
   tissueMix: 0,
   slabThickness: 0,
   paneZoom: 1,
+  pan: { axial: [0, 0], coronal: [0, 0], sagittal: [0, 0] },
   orbit: { azimuth: 0.6, elevation: 0.35, zoom: 1.6 },
   clip: { axial: false, coronal: false, sagittal: false },
   clipFlip: { axial: false, coronal: false, sagittal: false },
   opacity: 3,
   lightStrength: 0.6,
+  threshold: 0.28,
+  edgeBoost: 0.7,
+  showCrosshair: true,
   invert: false,
 };
 
@@ -52,6 +56,8 @@ interface StudyStore {
   readonly selectSeries: (uid: string) => void;
   readonly patchView: (patch: Partial<ViewerState>) => void;
   readonly setCursor: (cursor: Vec3) => void;
+  readonly panBy: (id: PlaneId, dx: number, dy: number) => void;
+  readonly resetPan: () => void;
   readonly toggleClip: (id: PlaneId) => void;
   readonly flipClip: (id: PlaneId) => void;
   readonly reset: () => void;
@@ -103,6 +109,14 @@ export const useStudy = create<StudyStore>((set, get) => ({
   patchView: (patch) => set({ view: { ...get().view, ...patch } }),
 
   setCursor: (cursor) => set({ view: { ...get().view, cursor } }),
+
+  panBy: (id, dx, dy) => {
+    const { view } = get();
+    const [x, y] = view.pan[id];
+    set({ view: { ...view, pan: { ...view.pan, [id]: [x + dx, y + dy] } } });
+  },
+
+  resetPan: () => set({ view: { ...get().view, pan: INITIAL_VIEW.pan, paneZoom: 1 } }),
 
   toggleClip: (id) => {
     const { view } = get();

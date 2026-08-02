@@ -245,15 +245,15 @@ function Controls() {
 /** Direction letters drawn over each cut, the way a radiology station shows them. */
 function EdgeLabels() {
   const series = useStudy(activeSeries);
-  const cursor = useStudy((state) => state.view.cursor);
+  const view = useStudy((state) => state.view);
   if (!series) return null;
 
   return (
     <div className="pointer-events-none absolute inset-0 grid grid-cols-2 grid-rows-2 gap-0.5">
       {PLANE_IDS.map((id) => {
-        const plane = standardPlane(series.volume, id, cursor);
+        const plane = standardPlane(series.volume, id, view.cursor, view.pan[id]);
         return (
-          <div key={id} className="relative">
+          <div key={id} className="relative overflow-hidden">
             <span className="absolute left-2 top-1.5 text-[11px] font-medium tracking-wide text-neutral-300">
               {plane.label}
             </span>

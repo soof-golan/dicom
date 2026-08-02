@@ -6,7 +6,16 @@
  * in the patient, and only then to a voxel. Nothing is resampled first.
  */
 import { describeDirection } from "../geometry/anatomy.ts";
-import { applyAffine, cross, dot, normalize, type Vec3 } from "../geometry/vec3.ts";
+import {
+  add,
+  applyAffine,
+  cross,
+  dot,
+  normalize,
+  scale,
+  subtract,
+  type Vec3,
+} from "../geometry/vec3.ts";
 import type { Volume } from "../volume/build.ts";
 
 export type PlaneId = "axial" | "coronal" | "sagittal";
@@ -112,25 +121,69 @@ function fitSize(bounds: Bounds, u: Vec3, v: Vec3): [number, number] {
   return [project(u), project(v)];
 }
 
-/** One standard view, centered on the cursor. */
-export function standardPlane(volume: Volume, id: PlaneId, cursor: Vec3): CutPlane {
+/** No shift of the view inside its own plane. */
+export const NO_PAN: readonly [number, number] = [0, 0];
+
+/**
+ * One standard view.
+ *
+ * The cursor decides the depth of the cut and nothing else. Where the view sits
+ * inside its own plane comes from the middle of the volume, plus the pan that
+ * the user set.
+ *
+ * Keeping these apart is what makes clicking predictable. If the cursor also
+ * decided the middle of the view, every click would recenter the image under
+ * the pointer, and a drag would make the image chase the pointer.
+ */
+export function standardPlane(
+  volume: Volume,
+  id: PlaneId,
+  cursor: Vec3,
+  pan: readonly [number, number] = NO_PAN,
+): CutPlane {
   const bounds = patientBounds(volume);
   const { u, v, label } = STANDARD[id];
   const [width, height] = fitSize(bounds, u, v);
+  const normal = normalize(cross(u, v));
+
+  // Take the middle of the volume, drop its depth, then put the cursor depth on.
+  const middle = bounds.center;
+  const inPlane = subtract(middle, scale(normal, dot(middle, normal)));
+  const origin = add(
+    add(inPlane, scale(normal, dot(cursor, normal))),
+    add(scale(u, pan[0]), scale(v, pan[1])),
+  );
+
   return {
     id,
     label,
-    origin: cursor,
+    origin,
     u,
     v,
-    normal: normalize(cross(u, v)),
+    normal,
     size: [width, height],
     edges: labelsFor(u, v),
   };
 }
 
-export function standardPlanes(volume: Volume, cursor: Vec3): CutPlane[] {
-  return PLANE_IDS.map((id) => standardPlane(volume, id, cursor));
+export function standardPlanes(
+  volume: Volume,
+  cursor: Vec3,
+  pan?: Readonly<Record<PlaneId, readonly [number, number]>>,
+): CutPlane[] {
+  return PLANE_IDS.map((id) => standardPlane(volume, id, cursor, pan?.[id]));
+}
+
+/**
+ * Where the cursor sits inside a view, as a fraction of the view from its
+ * middle. The crosshair is drawn at this point.
+ */
+export function cursorInPlane(plane: CutPlane, cursor: Vec3): { x: number; y: number } {
+  const offset = subtract(cursor, plane.origin);
+  return {
+    x: dot(offset, plane.u) / plane.size[0],
+    y: dot(offset, plane.v) / plane.size[1],
+  };
 }
 
 /**

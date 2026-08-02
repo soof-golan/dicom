@@ -25,6 +25,7 @@ import {
 } from "three";
 import {
   clipEquation,
+  cursorInPlane,
   patientBounds,
   standardPlane,
   type Bounds,
@@ -61,11 +62,18 @@ export interface ViewerState {
   readonly tissueMix: number;
   readonly slabThickness: number;
   readonly paneZoom: number;
+  /** Shift of each cut inside its own plane, in millimeters. */
+  readonly pan: Readonly<Record<PlaneId, readonly [number, number]>>;
   readonly orbit: OrbitState;
   readonly clip: Readonly<Record<PlaneId, boolean>>;
   readonly clipFlip: Readonly<Record<PlaneId, boolean>>;
   readonly opacity: number;
   readonly lightStrength: number;
+  /** Windowed brightness below which the 3D view treats a voxel as empty. */
+  readonly threshold: number;
+  /** How much the 3D view favours boundaries over the inside of a tissue. */
+  readonly edgeBoost: number;
+  readonly showCrosshair: boolean;
   readonly invert: boolean;
 }
 
@@ -87,6 +95,8 @@ const PLANE_UNIFORMS = () => ({
   uPlaneSize: { value: new Vector2() },
   uThickness: { value: 0 },
   uSlabSteps: { value: 1 },
+  uCursorOffset: { value: new Vector2() },
+  uCrosshair: { value: new Vector2(1, 0.2) },
 });
 
 const VOLUME_UNIFORMS = () => ({
@@ -108,6 +118,8 @@ const VOLUME_UNIFORMS = () => ({
   uClipPlanes: { value: [new Vector4(), new Vector4(), new Vector4()] },
   uClipEnabled: { value: [0, 0, 0] },
   uLightStrength: { value: 0.6 },
+  uThreshold: { value: 0.2 },
+  uEdgeBoost: { value: 0.7 },
 });
 
 /** Turn the column-major array from the core into a three.js matrix. */
@@ -256,6 +268,14 @@ export class VolumeScene {
     u.uThickness!.value = state.slabThickness;
     u.uSlabSteps!.value = state.slabThickness > 0.01 ? 16 : 1;
 
+    const offset = cursorInPlane(plane, state.cursor);
+    (u.uCursorOffset!.value as Vector2).set(offset.x * plane.size[0], offset.y * plane.size[1]);
+    // A line two pixels wide, whatever the zoom.
+    (u.uCrosshair!.value as Vector2).set(
+      state.showCrosshair ? 1 : 0,
+      (fitted[0] / state.paneZoom / Math.max(view.width, 1)) * 1.5,
+    );
+
     this.renderer.render(this.planeScene, this.planeCamera);
   }
 
@@ -287,6 +307,8 @@ export class VolumeScene {
     (u.uCameraPatient!.value as Vector3).copy(position);
     u.uOpacity!.value = state.opacity;
     u.uLightStrength!.value = state.lightStrength;
+    u.uThreshold!.value = state.threshold;
+    u.uEdgeBoost!.value = state.edgeBoost;
 
     // One step per voxel keeps detail without wasting fill rate.
     const smallestSpacing = Math.min(...this.texture.volume.spacing);
@@ -307,10 +329,10 @@ export class VolumeScene {
     this.renderer.render(this.volumeScene, this.volumeCamera as Camera);
   }
 
-  /** The cut planes for the current cursor. */
-  planesFor(volume: Volume, cursor: Vec3): CutPlane[] {
+  /** The cut planes for the current cursor and pan. */
+  planesFor(volume: Volume, state: ViewerState): CutPlane[] {
     return (["axial", "coronal", "sagittal"] as const).map((id) =>
-      standardPlane(volume, id, cursor),
+      standardPlane(volume, id, state.cursor, state.pan[id]),
     );
   }
 

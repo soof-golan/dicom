@@ -7,6 +7,7 @@ import {
   type PlaneId,
 } from "../../core/view/planes.ts";
 import { activeSeries, useStudy } from "../store.ts";
+import { gestureFor } from "./interaction.ts";
 import { VolumeScene, type Viewport } from "./VolumeScene.ts";
 
 const GAP = 2;
@@ -45,7 +46,8 @@ function paneAt(panes: readonly Pane[], x: number, y: number): Pane | undefined 
 }
 
 type Drag =
-  | { kind: "cursor"; pane: Pane }
+  | { kind: "crosshair"; pane: Pane }
+  | { kind: "pan"; pane: Pane; lastX: number; lastY: number }
   | { kind: "window"; startX: number; startY: number; center: number; width: number }
   | { kind: "orbit"; startX: number; startY: number; azimuth: number; elevation: number };
 
@@ -86,7 +88,7 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
       panesRef.current = panes;
       onPanes?.(panes);
 
-      const planes = scene.planesFor(series.volume, state.view.cursor);
+      const planes = scene.planesFor(series.volume, state.view);
       for (const pane of panes) {
         if (pane.id === "volume") {
           scene.drawVolume(pane.view, state.view, planes);
@@ -141,7 +143,7 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
 
     const rect = canvas.getBoundingClientRect();
     const state = useStudy.getState().view;
-    const plane = standardPlane(series.volume, pane.id, state.cursor);
+    const plane = standardPlane(series.volume, pane.id, state.cursor, state.pan[pane.id]);
 
     const localX = clientX - rect.left - pane.view.x;
     const localY = clientY - rect.top - pane.view.y;
@@ -167,6 +169,24 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
     ];
   };
 
+  /** How many millimeters one screen pixel covers in a pane. */
+  const millimetersPerPixel = (pane: Pane): { x: number; y: number } => {
+    const series = activeSeries(useStudy.getState());
+    if (!series || pane.id === "volume") return { x: 0, y: 0 };
+    const state = useStudy.getState().view;
+    const plane = standardPlane(series.volume, pane.id, state.cursor, state.pan[pane.id]);
+    const aspect = pane.view.width / Math.max(pane.view.height, 1);
+    const planeAspect = plane.size[0] / Math.max(plane.size[1], 1e-6);
+    const fitted =
+      planeAspect > aspect
+        ? [plane.size[0], plane.size[0] / aspect]
+        : [plane.size[1] * aspect, plane.size[1]];
+    return {
+      x: fitted[0]! / state.paneZoom / Math.max(pane.view.width, 1),
+      y: fitted[1]! / state.paneZoom / Math.max(pane.view.height, 1),
+    };
+  };
+
   const moveCursorTo = (pane: Pane, clientX: number, clientY: number): void => {
     const series = activeSeries(useStudy.getState());
     const point = patientAt(pane, clientX, clientY);
@@ -183,30 +203,35 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
     canvas.setPointerCapture(event.pointerId);
 
     const view = useStudy.getState().view;
-    const windowDrag = event.button === 2 || event.shiftKey;
+    const gesture = gestureFor(event, pane.id === "volume" ? "volume" : "cut");
 
-    if (windowDrag) {
-      dragRef.current = {
-        kind: "window",
-        startX: event.clientX,
-        startY: event.clientY,
-        center: view.windowCenter,
-        width: view.windowWidth,
-      };
-      return;
+    switch (gesture) {
+      case "window":
+        dragRef.current = {
+          kind: "window",
+          startX: event.clientX,
+          startY: event.clientY,
+          center: view.windowCenter,
+          width: view.windowWidth,
+        };
+        break;
+      case "pan":
+        dragRef.current = { kind: "pan", pane, lastX: event.clientX, lastY: event.clientY };
+        break;
+      case "orbit":
+        dragRef.current = {
+          kind: "orbit",
+          startX: event.clientX,
+          startY: event.clientY,
+          azimuth: view.orbit.azimuth,
+          elevation: view.orbit.elevation,
+        };
+        break;
+      case "crosshair":
+        dragRef.current = { kind: "crosshair", pane };
+        moveCursorTo(pane, event.clientX, event.clientY);
+        break;
     }
-    if (pane.id === "volume") {
-      dragRef.current = {
-        kind: "orbit",
-        startX: event.clientX,
-        startY: event.clientY,
-        azimuth: view.orbit.azimuth,
-        elevation: view.orbit.elevation,
-      };
-      return;
-    }
-    dragRef.current = { kind: "cursor", pane };
-    moveCursorTo(pane, event.clientX, event.clientY);
   };
 
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -214,8 +239,20 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
     if (!drag) return;
     const store = useStudy.getState();
 
-    if (drag.kind === "cursor") {
+    if (drag.kind === "crosshair") {
       moveCursorTo(drag.pane, event.clientX, event.clientY);
+      return;
+    }
+    if (drag.kind === "pan") {
+      if (drag.pane.id === "volume") return;
+      const scale = millimetersPerPixel(drag.pane);
+      store.panBy(
+        drag.pane.id,
+        -(event.clientX - drag.lastX) * scale.x,
+        -(event.clientY - drag.lastY) * scale.y,
+      );
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
       return;
     }
     if (drag.kind === "window") {
@@ -264,7 +301,7 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
     }
 
     // Step the cursor along the normal of the pane under the pointer.
-    const plane = standardPlane(series.volume, pane.id, store.view.cursor);
+    const plane = standardPlane(series.volume, pane.id, store.view.cursor, store.view.pan[pane.id]);
     const step = Math.sign(event.deltaY) * Math.min(...series.volume.spacing);
     const moved: Vec3 = [
       store.view.cursor[0] + plane.normal[0] * step,
