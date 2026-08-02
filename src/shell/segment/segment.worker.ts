@@ -55,6 +55,16 @@ async function loadRuntime(): Promise<Transformers> {
   // The Cache API survives a reload and streams, which matters for a download
   // this size. It is the default; this only makes the choice explicit.
   module.env.useBrowserCache = true;
+
+  // Take the WebAssembly runtime from our own origin, not from a public CDN.
+  // The Content-Security-Policy allows no third-party script, and a viewer that
+  // reads medical images must not hand a CDN the right to run code. The build
+  // copies the binaries into /ort/. See scripts/ort-assets-plugin.ts.
+  const wasmBackend = module.env.backends.onnx.wasm;
+  if (wasmBackend) {
+    wasmBackend.wasmPaths = new URL("/ort/", self.location.origin).href;
+  }
+
   return module;
 }
 

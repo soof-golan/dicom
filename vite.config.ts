@@ -2,9 +2,10 @@ import { defineConfig } from "vite-plus";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { devStudy } from "./scripts/dev-study-plugin.ts";
+import { ortAssets } from "./scripts/ort-assets-plugin.ts";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), devStudy()],
+  plugins: [react(), tailwindcss(), devStudy(), ortAssets()],
   staged: {
     "*": "vp check --fix",
   },
