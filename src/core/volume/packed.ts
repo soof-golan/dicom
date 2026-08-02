@@ -35,6 +35,8 @@ export interface PackedSidecar {
   readonly description: string;
   readonly modality: string;
   readonly seriesInstanceUid: string;
+  /** Series that share this UID share one patient coordinate system. */
+  readonly frameOfReferenceUid: string;
   readonly warnings: readonly string[];
 }
 
@@ -143,6 +145,7 @@ export function parseSidecar(json: unknown): PackedSidecar {
     description: text(source.description, "description"),
     modality: text(source.modality, "modality"),
     seriesInstanceUid: text(source.seriesInstanceUid, "seriesInstanceUid"),
+    frameOfReferenceUid: text(source.frameOfReferenceUid, "frameOfReferenceUid"),
     warnings: (source.warnings ?? []) as readonly string[],
   };
 }
@@ -225,6 +228,7 @@ export function volumeFromPacked(sidecar: PackedSidecar, voxels: ArrayBuffer): V
     description: sidecar.description,
     modality: sidecar.modality,
     seriesInstanceUid: sidecar.seriesInstanceUid,
+    frameOfReferenceUid: sidecar.frameOfReferenceUid,
     warnings: sidecar.warnings,
   };
 }

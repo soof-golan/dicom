@@ -70,6 +70,7 @@ class Grid:
 class SeriesVolume:
     name: str
     series_instance_uid: str
+    frame_of_reference_uid: str
     series_number: int
     description: str
     modality: str
@@ -169,6 +170,7 @@ def read_series(series_dir: Path) -> SeriesVolume:
     return SeriesVolume(
         name=series_dir.name,
         series_instance_uid=str(head.SeriesInstanceUID),
+        frame_of_reference_uid=str(getattr(head, "FrameOfReferenceUID", "")),
         series_number=int(head.SeriesNumber),
         description=str(
             getattr(head, "SeriesDescription", "") or getattr(head, "ProtocolName", "")
@@ -239,6 +241,7 @@ def sidecar(series: SeriesVolume, grid: Grid, url: str) -> dict:
         "description": series.description,
         "modality": series.modality,
         "seriesInstanceUid": series.series_instance_uid,
+        "frameOfReferenceUid": series.frame_of_reference_uid,
         "warnings": series.warnings,
     }
 

@@ -238,28 +238,35 @@ everything the reader needs except the voxels.
 
 Every field of a sidecar:
 
-| Field               | Type       | Meaning                                                      |
-| ------------------- | ---------- | ------------------------------------------------------------ |
-| `url`               | string     | Name of the voxel file, relative to the manifest             |
-| `bytes`             | number     | Length of the voxel file, before transport encoding          |
-| `dataType`          | string     | `uint16` or `int16`                                          |
-| `dims`              | 3 numbers  | Voxel counts along i, j and k                                |
-| `spacing`           | 3 numbers  | Millimeters between voxel centers along i, j and k           |
-| `origin`            | 3 numbers  | Patient coordinates of the center of voxel (0, 0, 0)         |
-| `axes`              | 3x3        | Unit direction of i, j and k in patient space                |
-| `voxelToPatient`    | 16 numbers | 4x4 affine, column major, voxel index to patient millimeters |
-| `valueRange`        | min, max   | Smallest and largest stored value in the file                |
-| `rescaleSlope`      | number     | Multiply a stored value by this for physical units           |
-| `rescaleIntercept`  | number     | Add this after the multiply                                  |
-| `windowCenter`      | number     | Suggested window center, from the scanner. Can be absent.    |
-| `windowWidth`       | number     | Suggested window width, from the scanner. Can be absent.     |
-| `description`       | string     | SeriesDescription, such as `pd_tse_fs_cor_DRB`               |
-| `modality`          | string     | `MR` for every series here                                   |
-| `seriesInstanceUid` | string     | The remapped Series Instance UID                             |
-| `warnings`          | strings    | Geometry faults the packer found. Empty for this study.      |
+| Field                 | Type       | Meaning                                                        |
+| --------------------- | ---------- | -------------------------------------------------------------- |
+| `url`                 | string     | Name of the voxel file, relative to the manifest               |
+| `bytes`               | number     | Length of the voxel file, before transport encoding            |
+| `dataType`            | string     | `uint16` or `int16`                                            |
+| `dims`                | 3 numbers  | Voxel counts along i, j and k                                  |
+| `spacing`             | 3 numbers  | Millimeters between voxel centers along i, j and k             |
+| `origin`              | 3 numbers  | Patient coordinates of the center of voxel (0, 0, 0)           |
+| `axes`                | 3x3        | Unit direction of i, j and k in patient space                  |
+| `voxelToPatient`      | 16 numbers | 4x4 affine, column major, voxel index to patient millimeters   |
+| `valueRange`          | min, max   | Smallest and largest stored value in the file                  |
+| `rescaleSlope`        | number     | Multiply a stored value by this for physical units             |
+| `rescaleIntercept`    | number     | Add this after the multiply                                    |
+| `windowCenter`        | number     | Suggested window center, from the scanner. Can be absent.      |
+| `windowWidth`         | number     | Suggested window width, from the scanner. Can be absent.       |
+| `description`         | string     | SeriesDescription, such as `pd_tse_fs_cor_DRB`                 |
+| `modality`            | string     | `MR` for every series here                                     |
+| `seriesInstanceUid`   | string     | The remapped Series Instance UID                               |
+| `frameOfReferenceUid` | string     | The remapped Frame of Reference UID. All four series share it. |
+| `warnings`            | strings    | Geometry faults the packer found. Empty for this study.        |
 
 `voxelToPatient` is column major, the order that WebGL and three.js want. Column
 `n` is `axes[n]` multiplied by `spacing[n]`. The last column is `origin` and 1.
+
+`frameOfReferenceUid` must survive the remap with its value shared. Two series
+sit in one patient coordinate system only when this UID matches, and
+`src/core/tissue/resample.ts` refuses to combine them otherwise. A remap that
+gave each series its own value would turn off the cross-series tools without an
+error message.
 
 ### The preview
 

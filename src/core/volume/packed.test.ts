@@ -137,8 +137,25 @@ describe.each(SERIES_NAMES)("the packed %s reproduces the DICOM volume", (name) 
     expect(actual.description).toBe(expected.description);
     expect(actual.modality).toBe(expected.modality);
     expect(actual.seriesInstanceUid).toBe(expected.seriesInstanceUid);
+    expect(actual.frameOfReferenceUid).toBe(expected.frameOfReferenceUid);
     expect(actual.signed).toBe(expected.signed);
     expect(actual.warnings).toEqual(expected.warnings);
+  });
+});
+
+describe("the frame of reference", () => {
+  it("is one UID across the whole study", () => {
+    // resample.ts refuses to combine two series unless this UID matches, so a
+    // packer that lost it would silently disable the cross-series tools.
+    const uids = new Set(manifest.series.map((series) => series.full.frameOfReferenceUid));
+    expect(uids.size).toBe(1);
+    expect([...uids][0]).not.toBe("");
+  });
+
+  it("is the same on a preview as on its full volume", () => {
+    for (const series of manifest.series) {
+      expect(series.preview.frameOfReferenceUid).toBe(series.full.frameOfReferenceUid);
+    }
   });
 });
 
