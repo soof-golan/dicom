@@ -494,12 +494,28 @@ purge the cache. The cached responses hold the old CORS headers.
 
 The code in this repository is MIT. See [LICENSE](../LICENSE).
 
-The imaging data is a separate work with a separate license. It is dedicated to
-the public domain under **CC0 1.0 Universal**. See
-[LICENSE-DATA](../LICENSE-DATA) for the dedication and the full legal code.
+The imaging data is a separate work with a separate license. It is licensed
+**CC BY-NC-ND 4.0**. See [LICENSE-DATA](../LICENSE-DATA) for the notice and the
+full legal code.
 
-CC0 asks nothing of you. You can copy the study, change it, and use it for any
-purpose, including a commercial one, without a notice and without permission.
+You can copy and share the study for a purpose that is not commercial, if you
+give credit:
+
+```
+Right elbow MRI by Soof Golan, licensed CC BY-NC-ND 4.0.
+https://github.com/soof-golan/dicom
+```
+
+You cannot use it commercially, and you cannot share a modified version.
+
+A format change is not a modified version. Section 2(a)(4) of the license allows
+a technical or format change and states that such a change never produces
+Adapted Material. So the packed volumes that this project serves are inside the
+license, and so is anyone who converts the study to another container.
+
+CAUTION: a segmentation, a measurement, or an annotation that you draw on the
+study is a modified version. The license does not let you publish one. Make one
+for yourself, or ask the licensor.
 
 Two facts still apply, and neither is a license condition.
 
@@ -511,5 +527,13 @@ it.
 The scan shows a real injury. Do not use it to make a medical decision about
 anyone, including the person in it.
 
-Upload `LICENSE-DATA` to the bucket beside the data, so the dedication travels
-with the files.
+Upload `LICENSE-DATA` to the bucket beside the data, so the notice travels with
+the files.
+
+### License history
+
+A commit on 2026-08-02 dedicated the imaging to the public domain under CC0 1.0.
+The owner replaced that with CC BY-NC-ND 4.0 the same day. No imaging was ever
+published under CC0: the dedication named a work that had not yet left this
+machine, and the bucket was empty. If you hold a copy that says CC0, it did not
+come from the owner.

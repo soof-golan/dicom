@@ -55,8 +55,11 @@ The code has a functional core and an imperative shell.
 
 The software is MIT. Copyright (c) 2026 Soof Golan. See [LICENSE](LICENSE).
 
-The demo imaging is a separate work, dedicated to the public domain under CC0
-1.0 Universal. See [LICENSE-DATA](LICENSE-DATA). It is a real elbow MRI of the
-author, donated on purpose. The patient name stays in the headers by his choice,
-so the study is not fully de-identified. Read
-[docs/demo-dataset.md](docs/demo-dataset.md) before you redistribute it.
+The demo imaging is a separate work, licensed
+[CC BY-NC-ND 4.0](LICENSE-DATA). It is a real elbow MRI of the author, donated
+on purpose. Share it for a purpose that is not commercial, with credit. Do not
+publish a modified version. A format change is not a modified version.
+
+The patient name stays in the headers by the author's choice, so the study is
+not fully de-identified. Read [docs/demo-dataset.md](docs/demo-dataset.md)
+before you redistribute it.
