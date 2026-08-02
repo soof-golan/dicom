@@ -4,7 +4,7 @@
  * Everything is behind a gesture. The panel probes the machine when it opens,
  * states the real download size, and downloads nothing until the user asks.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatBytes } from "../../core/segment/plan.ts";
 import type { Segment } from "../../core/segment/types.ts";
 import { downloadSize, segmentVolume, useSegment, type PromptMode } from "./store.ts";
@@ -186,7 +186,8 @@ function Row({ segment }: { segment: Segment }) {
   const hidden = useSegment((state) => state.hidden.includes(segment.id));
   const toggle = useSegment((state) => state.toggleVisible);
   const remove = useSegment((state) => state.remove);
-  const size = segmentVolume(segment);
+  // A segment never changes, and measuring one walks a million mask pixels.
+  const size = useMemo(() => segmentVolume(segment), [segment]);
 
   return (
     <li className="flex items-center gap-1.5 rounded px-1 py-1 hover:bg-neutral-800/60">

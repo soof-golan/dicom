@@ -97,6 +97,11 @@ export default function SegmentOverlay() {
     canvas.width = size.width;
     canvas.height = size.height;
     context.clearRect(0, 0, size.width, size.height);
+
+    // The viewer nudges its own store on every pointer move, so this effect
+    // runs often. With nothing to draw it must cost nothing.
+    if (segments.length === 0 && !draft && !bandRef.current) return;
+
     const image = context.createImageData(size.width, size.height);
     const panes = layout(size.width, size.height);
 
@@ -258,7 +263,8 @@ export default function SegmentOverlay() {
       className={`absolute inset-0 ${active ? "cursor-crosshair" : "pointer-events-none"}`}
       onPointerDown={active ? onPointerDown : undefined}
       onPointerMove={active && mode === "box" ? onPointerMove : undefined}
-      onPointerUp={active && mode === "box" ? onPointerUp : undefined}
+      onPointerUp={active ? onPointerUp : undefined}
+      onPointerCancel={active ? onPointerUp : undefined}
       onContextMenu={(event) => event.preventDefault()}
     >
       <canvas ref={canvasRef} className="pointer-events-none h-full w-full" />
