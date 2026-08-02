@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { PLANE_IDS, standardPlane, type PlaneId } from "../core/view/planes.ts";
 import { loadStudy, readDataTransfer, readDevStudy, readFiles } from "./loader/loadStudy.ts";
 import type { StudySource } from "./loader/messages.ts";
+import { PrivacyPolicy } from "./legal/PrivacyPolicy.tsx";
+import { Terms } from "./legal/Terms.tsx";
+import { pageHref, usePage } from "./routes.ts";
 import { activeSeries, useStudy } from "./store.ts";
+import { Tutorial, useTutorial } from "./Tutorial.tsx";
 import { ViewerCanvas } from "./viewer/ViewerCanvas.tsx";
 
 function useLoader() {
@@ -322,11 +326,60 @@ function EdgeLabels() {
   );
 }
 
+function SidebarFooter({ onReplayTutorial }: { onReplayTutorial: () => void }) {
+  return (
+    <footer className="mt-auto space-y-2 border-t border-neutral-800 pt-3">
+      <button
+        type="button"
+        onClick={onReplayTutorial}
+        className="text-[11px] text-neutral-500 transition-colors hover:text-neutral-300"
+      >
+        Show the tutorial again
+      </button>
+      <p className="flex gap-3 text-[11px] text-neutral-600">
+        <a href={pageHref("privacy")} className="transition-colors hover:text-neutral-400">
+          Privacy
+        </a>
+        <a href={pageHref("terms")} className="transition-colors hover:text-neutral-400">
+          Terms
+        </a>
+        <a
+          href="https://github.com/soof-golan/dicom"
+          className="transition-colors hover:text-neutral-400"
+        >
+          Source
+        </a>
+      </p>
+      <p className="text-[10px] leading-relaxed text-neutral-700">
+        Not a medical device. Do not use for diagnosis.
+      </p>
+    </footer>
+  );
+}
+
+function LegalScreen({ page }: { page: "privacy" | "terms" }) {
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-2xl px-6 py-10">
+        <a
+          href={pageHref("viewer")}
+          className="mb-8 inline-block text-[12px] text-neutral-500 transition-colors hover:text-neutral-300"
+        >
+          &larr; Back to the viewer
+        </a>
+        {page === "privacy" ? <PrivacyPolicy /> : <Terms />}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const load = useLoader();
   const status = useStudy((state) => state.status);
   const series = useStudy((state) => state.series);
   const error = useStudy((state) => state.error);
+  const [page] = usePage();
+  const tutorial = useTutorial();
 
   // In development, the server can offer a study so the viewer has data at once.
   // React runs an effect twice under StrictMode, so this guard keeps one load.
@@ -339,6 +392,14 @@ export function App() {
     });
   }, [load]);
 
+  if (page === "privacy" || page === "terms") {
+    return <LegalScreen page={page} />;
+  }
+
+  const hasSeries = series.length > 0;
+  // The tutorial waits for a scan. Pointing at an empty screen teaches nothing.
+  const showTutorial = tutorial.loaded && !tutorial.state.finished && hasSeries;
+
   return (
     <div className="flex h-full">
       <aside className="flex w-64 shrink-0 flex-col gap-5 overflow-y-auto border-r border-neutral-800 bg-[#0e1015] p-3">
@@ -346,22 +407,23 @@ export function App() {
           <h1 className="text-sm font-semibold tracking-tight">DICOM Viewer</h1>
           <p className="text-[11px] text-neutral-500">Nothing leaves this device.</p>
         </header>
-        {series.length > 0 && (
+        {hasSeries && (
           <section>
             <h2 className="mb-1.5 text-[11px] uppercase tracking-wider text-neutral-500">Series</h2>
             <SeriesList />
           </section>
         )}
-        {series.length > 0 && (
+        {hasSeries && (
           <section>
             <h2 className="mb-2 text-[11px] uppercase tracking-wider text-neutral-500">Display</h2>
             <Controls />
           </section>
         )}
+        <SidebarFooter onReplayTutorial={tutorial.restart} />
       </aside>
 
       <main className="relative min-w-0 flex-1">
-        {status === "ready" || series.length > 0 ? (
+        {status === "ready" || hasSeries ? (
           <>
             <ViewerCanvas />
             <EdgeLabels />
@@ -375,6 +437,8 @@ export function App() {
           </p>
         )}
       </main>
+
+      {showTutorial && <Tutorial state={tutorial.state} onChange={tutorial.update} />}
     </div>
   );
 }
