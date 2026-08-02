@@ -8,7 +8,9 @@ import {
 } from "../../core/view/planes.ts";
 import { activeSeries, useStudy } from "../store.ts";
 import { gestureFor } from "./interaction.ts";
-import { VolumeScene, type Viewport } from "./VolumeScene.ts";
+import { cubeViewport, VolumeScene, type Viewport } from "./VolumeScene.ts";
+import type { CubeRegion } from "../../core/view/viewcube.ts";
+import { anglesFor } from "../../core/view/viewcube.ts";
 
 const GAP = 2;
 
@@ -56,6 +58,7 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
   const sceneRef = useRef<VolumeScene>(null);
   const panesRef = useRef<Pane[]>([]);
   const dragRef = useRef<Drag>(null);
+  const hoveredCubeRef = useRef<CubeRegion>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -91,7 +94,7 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
       const planes = scene.planesFor(series.volume, state.view);
       for (const pane of panes) {
         if (pane.id === "volume") {
-          scene.drawVolume(pane.view, state.view, planes);
+          scene.drawVolume(pane.view, state.view, planes, hoveredCubeRef.current ?? undefined);
         } else {
           const plane = planes.find((entry) => entry.id === pane.id);
           if (plane) scene.drawPlane(pane.view, plane, state.view);
@@ -187,6 +190,21 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
     };
   };
 
+  /** The view cube region under a pointer, or nothing when it misses the cube. */
+  const cubeRegionAt = (clientX: number, clientY: number): CubeRegion | undefined => {
+    const canvas = canvasRef.current;
+    const scene = sceneRef.current;
+    const volumePane = panesRef.current.find((pane) => pane.id === "volume");
+    if (!canvas || !scene || !volumePane) return undefined;
+
+    const rect = canvas.getBoundingClientRect();
+    const box = cubeViewport(volumePane.view);
+    const x = clientX - rect.left - box.x;
+    const y = clientY - rect.top - box.y;
+    if (x < 0 || y < 0 || x > box.width || y > box.height) return undefined;
+    return scene.cube.pick(x, y, box, useStudy.getState().view.orbit);
+  };
+
   const moveCursorTo = (pane: Pane, clientX: number, clientY: number): void => {
     const series = activeSeries(useStudy.getState());
     const point = patientAt(pane, clientX, clientY);
@@ -203,6 +221,17 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
     canvas.setPointerCapture(event.pointerId);
 
     const view = useStudy.getState().view;
+
+    // The cube sits on top of the 3D view, so it gets the press first.
+    if (pane.id === "volume" && event.button === 0 && !event.shiftKey && !event.altKey) {
+      const region = cubeRegionAt(event.clientX, event.clientY);
+      if (region) {
+        const angles = anglesFor(region.direction);
+        useStudy.getState().patchView({ orbit: { ...view.orbit, ...angles } });
+        return;
+      }
+    }
+
     const gesture = gestureFor(event, pane.id === "volume" ? "volume" : "cut");
 
     switch (gesture) {
@@ -236,7 +265,15 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
 
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag) {
+      const region = cubeRegionAt(event.clientX, event.clientY);
+      if (region?.id !== hoveredCubeRef.current?.id) {
+        hoveredCubeRef.current = region ?? null;
+        // Nudge the render loop, which watches the store.
+        useStudy.getState().patchView({});
+      }
+      return;
+    }
     const store = useStudy.getState();
 
     if (drag.kind === "crosshair") {

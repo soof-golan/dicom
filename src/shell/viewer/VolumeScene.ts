@@ -36,6 +36,8 @@ import type { Vec3 } from "../../core/geometry/vec3.ts";
 import { PLANE_FRAGMENT, PLANE_VERTEX, VOLUME_FRAGMENT, VOLUME_VERTEX } from "./shaders.ts";
 import { createVolumeTexture, type VolumeTexture } from "./volumeTexture.ts";
 import type { Volume } from "../../core/volume/build.ts";
+import { ViewCube } from "./ViewCube.ts";
+import type { CubeRegion } from "../../core/view/viewcube.ts";
 
 export interface Viewport {
   /** Left edge, in CSS pixels from the left of the canvas. */
@@ -122,6 +124,20 @@ const VOLUME_UNIFORMS = () => ({
   uEdgeBoost: { value: 0.7 },
 });
 
+const CUBE_SIZE = 132;
+const CUBE_MARGIN = 12;
+
+/** Where the view cube sits inside the 3D pane: the top right corner. */
+export function cubeViewport(pane: Viewport): Viewport {
+  const size = Math.min(CUBE_SIZE, Math.floor(Math.min(pane.width, pane.height) * 0.4));
+  return {
+    x: pane.x + pane.width - size - CUBE_MARGIN,
+    y: pane.y + CUBE_MARGIN,
+    width: size,
+    height: size,
+  };
+}
+
 /** Turn the column-major array from the core into a three.js matrix. */
 function toMatrix4(values: readonly number[]): Matrix4 {
   return new Matrix4().fromArray(values as number[]);
@@ -141,6 +157,7 @@ export class VolumeScene {
 
   private texture?: VolumeTexture;
   private bounds?: Bounds;
+  readonly cube = new ViewCube();
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
@@ -280,7 +297,12 @@ export class VolumeScene {
   }
 
   /** Place the orbit camera and draw the raymarched view. */
-  drawVolume(view: Viewport, state: ViewerState, planes: readonly CutPlane[]): void {
+  drawVolume(
+    view: Viewport,
+    state: ViewerState,
+    planes: readonly CutPlane[],
+    hoveredCubeRegion?: CubeRegion,
+  ): void {
     if (!this.texture || !this.bounds) return;
     this.useViewport(view);
 
@@ -327,6 +349,7 @@ export class VolumeScene {
     });
 
     this.renderer.render(this.volumeScene, this.volumeCamera as Camera);
+    this.cube.draw(this.renderer, cubeViewport(view), state.orbit, hoveredCubeRegion);
   }
 
   /** The cut planes for the current cursor and pan. */
@@ -337,6 +360,7 @@ export class VolumeScene {
   }
 
   dispose(): void {
+    this.cube.dispose();
     this.texture?.dispose();
     this.planeMesh.geometry.dispose();
     this.planeMaterial.dispose();
