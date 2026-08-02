@@ -6,6 +6,12 @@
   // A static site. There is no Worker script, only assets, so `main` is absent.
   // `single-page-application` serves index.html for a path that matches no file,
   // which the client-side router needs. A real asset always wins over this rule.
+  // Wrangler runs this before it uploads, so the deploy works even when the
+  // build step is not configured in the Cloudflare dashboard.
+  "build": {
+    "command": "npm run build",
+  },
+
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application",
