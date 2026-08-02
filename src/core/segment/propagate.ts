@@ -22,7 +22,14 @@ import { dilate, erode, maskArea, maskBounds, maskCentroid, type MaskBounds } fr
 import type { Mask } from "./types.ts";
 
 /** Why a walk stopped on one side of the seed. */
-export type StopCause = "edge" | "vanished" | "collapsed" | "leaked" | "low-score" | "limit";
+export type StopCause =
+  | "edge"
+  | "vanished"
+  | "collapsed"
+  | "leaked"
+  | "drifted"
+  | "low-score"
+  | "limit";
 
 export interface GrowthLimits {
   /** The most slices one seed may travel on each side. */
@@ -31,6 +38,14 @@ export interface GrowthLimits {
   readonly minArea: number;
   /** Stop when a slice covers more than this many times the slice before it. */
   readonly growthRatio: number;
+  /**
+   * Stop when a slice covers more than this many times the seed.
+   *
+   * A step test alone does not catch slow drift. A mask that grows 20% per
+   * slice passes every step test and still covers ten times the seed after 13
+   * slices. This test holds the whole walk against what the user clicked.
+   */
+  readonly driftRatio: number;
   /** Stop when the model rates its own mask below this. */
   readonly minScore: number;
   /** How much wider than the last mask the next box prompt is. */
@@ -49,6 +64,7 @@ export const DEFAULT_GROWTH: GrowthLimits = {
   maxSlices: 32,
   minArea: 24,
   growthRatio: 2.5,
+  driftRatio: 3,
   minScore: 0.5,
   boxMargin: 0.12,
 };
@@ -64,10 +80,12 @@ export function judgeSlice(
   area: number,
   score: number,
   limits: GrowthLimits,
+  seedArea = 0,
 ): StopCause | undefined {
   if (area === 0) return "vanished";
   if (area < limits.minArea) return "collapsed";
   if (previousArea > 0 && area > previousArea * limits.growthRatio) return "leaked";
+  if (seedArea > 0 && area > seedArea * limits.driftRatio) return "drifted";
   if (score < limits.minScore) return "low-score";
   return undefined;
 }
@@ -77,6 +95,7 @@ const MESSAGES: Record<StopCause, string> = {
   vanished: "The mask went empty. The structure ends here.",
   collapsed: "The mask became too small to report. The structure ends here.",
   leaked: "The mask jumped into the tissue next to it. The walk stopped and dropped that slice.",
+  drifted: "The mask grew far past the slice you clicked. The walk stopped and dropped that slice.",
   "low-score": "The model rated its own mask low. The walk stopped and dropped that slice.",
   limit: "The walk reached the slice limit. Click further along to go on.",
 };

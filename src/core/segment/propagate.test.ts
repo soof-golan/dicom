@@ -62,15 +62,42 @@ describe("judgeSlice", () => {
     let area = 4000;
     for (let step = 0; step < 6; step += 1) {
       const next = Math.round(area * 0.8);
-      expect(judgeSlice(area, next, 0.85, limits)).toBeUndefined();
+      expect(judgeSlice(area, next, 0.85, limits, 4000)).toBeUndefined();
       area = next;
     }
+  });
+
+  it("stops a mask that drifted far past the slice the user clicked", () => {
+    expect(judgeSlice(2000, 1000 * limits.driftRatio + 1, 0.9, limits, 1000)).toBe("drifted");
+  });
+
+  it("catches slow drift that every step test passes", () => {
+    let area = 1000;
+    let cause: StopCause | undefined;
+    for (let step = 0; step < 20 && !cause; step += 1) {
+      const next = Math.round(area * 1.2);
+      cause = judgeSlice(area, next, 0.9, limits, 1000);
+      area = next;
+    }
+    expect(cause).toBe("drifted");
+  });
+
+  it("ignores the drift test when the caller gives no seed", () => {
+    expect(judgeSlice(2000, 1000 * limits.driftRatio + 1, 0.9, limits)).toBeUndefined();
   });
 });
 
 describe("stopMessage", () => {
   it("gives a plain reason for every cause", () => {
-    const causes: StopCause[] = ["edge", "vanished", "collapsed", "leaked", "low-score", "limit"];
+    const causes: StopCause[] = [
+      "edge",
+      "vanished",
+      "collapsed",
+      "leaked",
+      "drifted",
+      "low-score",
+      "limit",
+    ];
     for (const cause of causes) {
       expect(stopMessage(cause).length).toBeGreaterThan(10);
     }

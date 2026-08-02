@@ -150,6 +150,20 @@ function toImage(
   return new runtime!.RawImage(rgb, width, height, 3);
 }
 
+/**
+ * Free the GPU buffers of a set of tensors.
+ *
+ * Growing an object encodes one picture per slice. Without this, every
+ * embedding of every slice stays on the GPU: a walk of 25 slices took 720 ms
+ * for the first slice and 5.8 s for the last one. Measured 2026-08-02.
+ */
+function release(tensors: Record<string, unknown> | undefined): void {
+  if (!tensors) return;
+  for (const value of Object.values(tensors)) {
+    (value as { dispose?: () => void })?.dispose?.();
+  }
+}
+
 async function encode(gray: Uint8Array, width: number, height: number): Promise<void> {
   if (!sam || !runtime) throw new Error("the model is not loaded");
   const image = toImage(gray, width, height);
@@ -159,6 +173,8 @@ async function encode(gray: Uint8Array, width: number, height: number): Promise<
       get_image_embeddings: (input: unknown) => Promise<Record<string, unknown>>;
     }
   ).get_image_embeddings(inputs)) as Record<string, unknown>;
+  release(encoded?.embeddings);
+  release(encoded?.inputs);
   encoded = { inputs, embeddings, image, width, height };
 }
 
@@ -193,7 +209,11 @@ async function decode(
     ...encoded.inputs,
     ...encoded.embeddings,
     ...prompt,
-  })) as { pred_masks: unknown; iou_scores: { data: Float32Array } };
+  })) as {
+    pred_masks: unknown;
+    iou_scores: { data: Float32Array };
+    object_score_logits?: unknown;
+  };
 
   const masks = (await (
     processor as unknown as {
@@ -223,6 +243,9 @@ async function decode(
   const data = new Uint8Array(width * height);
   const offset = best * width * height;
   for (let i = 0; i < data.length; i += 1) data[i] = mask.data[offset + i] ? 1 : 0;
+
+  release(prompt);
+  release(output as unknown as Record<string, unknown>);
   return { width, height, data, score: scores[best] ?? 0 };
 }
 

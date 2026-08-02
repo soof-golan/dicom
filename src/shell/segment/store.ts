@@ -20,6 +20,7 @@ import { encodeRle } from "../../core/segment/mask.ts";
 import type { Mask } from "../../core/segment/types.ts";
 import {
   framePixelToPatient,
+  maskVoxelIndices,
   patientToFramePixel,
   sampleSliceGray,
   sliceFrame,
@@ -45,7 +46,7 @@ import {
   emptySession,
   findCut,
   findObject,
-  objectVolumeCubicMillimeters,
+  type MaskPart,
   removeObject,
   renameObject,
   selectObject,
@@ -318,7 +319,8 @@ export const useSegment = create<SegmentStore>((set, get) => {
       depthRange(volume, seed.plane),
     );
     let previous = tidyMask(seedMask);
-    let previousArea = maskArea(previous);
+    const seedArea = maskArea(previous);
+    let previousArea = seedArea;
     let kept = 0;
 
     for (const depth of depths) {
@@ -345,7 +347,7 @@ export const useSegment = create<SegmentStore>((set, get) => {
         data: answer.data,
       };
       const area = maskArea(candidate);
-      const cause = judgeSlice(previousArea, area, answer.score, DEFAULT_GROWTH);
+      const cause = judgeSlice(previousArea, area, answer.score, DEFAULT_GROWTH, seedArea);
       if (cause) return { cause, kept };
 
       set({
@@ -623,10 +625,36 @@ function boxIn(frame: MaskFrame, cut: PromptCut): BoxPrompt | undefined {
   };
 }
 
+/**
+ * The voxels under one mask, worked out once.
+ *
+ * A mask never changes after the model makes it, so its voxels never change
+ * either. Without this, a growing object measures every mask it holds on
+ * every new slice, and one walk becomes quadratic: a 32-slice walk slowed
+ * from 1.0 s to 3.8 s per slice. Measured 2026-08-02.
+ */
+const voxelsOfPart = new WeakMap<MaskPart, Int32Array>();
+
+function partVoxels(volume: Volume, part: MaskPart): Int32Array {
+  let found = voxelsOfPart.get(part);
+  if (!found) {
+    found = maskVoxelIndices(volume, part.frame, decodeRle(part.mask));
+    voxelsOfPart.set(part, found);
+  }
+  return found;
+}
+
 /** The size of an object in cubic millimetres, over the active series. */
 export function objectVolume(object: SegmentObject): number {
   const series = activeSeries(useStudy.getState());
-  return series ? objectVolumeCubicMillimeters(series.volume, object) : 0;
+  if (!series) return 0;
+  const { volume } = series;
+  const found = new Set<number>();
+  for (const cut of object.cuts) {
+    if (!cut.part) continue;
+    for (const index of partVoxels(volume, cut.part)) found.add(index);
+  }
+  return found.size * volume.spacing[0] * volume.spacing[1] * volume.spacing[2];
 }
 
 export function downloadSize(plan: ModelPlan, text: TextPlan | undefined): string {
