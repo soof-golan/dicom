@@ -19,8 +19,17 @@ Three prompt types work:
 - **Click.** Click inside the structure. Alt-click marks a point to exclude.
 - **Text.** Type a phrase. Read section 6 first.
 
-Each mask belongs to the slice you made it on. Move the cursor to another
-slice and the mask disappears. Move back and it returns.
+You can build more than one object. Each object has a name that you give it,
+a colour of its own, and prompts on as many cuts as you want. New clicks go
+to the object that the panel shows as active.
+
+Every prompt is a point in patient millimetres. It survives a scroll, a pan,
+a zoom, a rotation, a window change and a change of series, because none of
+those move the patient. A prompt that you placed on another slice stays on
+screen and fades as the cut moves away from it.
+
+You can also grow one clicked slice through the slices around it. Read
+section 5 for what that does and section 6 for what it costs.
 
 ---
 
@@ -258,11 +267,21 @@ The text feature needs WebGPU. On the WebAssembly path the panel hides it.
 4. Wait for the panel to show the backend and the model name.
 5. Select **Box** or **Click**.
 6. Drag a rectangle around a structure, or click inside it.
-7. Look at the white outline on the cut.
-8. To keep the mask, select **Keep**. To drop it, select **Discard**.
+7. Look at the outline on the cut. The first click makes an object.
+8. Scroll to another slice, or use another pane, and click again. The clicks
+   join the same object.
+9. To exclude a region, select **Exclude**, or hold alt while you click.
+10. To start a second object, select **New object**.
+11. To rename an object, double click its name.
+12. To take back the last action, select **Undo**.
 
-A kept mask joins the list under the panel. Each row gives a color, a label,
-a size in cubic millimeters, a visibility button and a delete button.
+The list under the panel gives one row for each object: a colour, a name, a
+size in cubic millimetres, a visibility button and a delete button. Under the
+active object the panel lists every slice you clicked on. Select a slice to
+move the cursor back to it.
+
+Where two objects overlap, the object lower in the list covers the object
+above it. The list runs in the order the objects were made.
 
 To stop a download, select **Stop**. The next download starts again from the
 beginning, because the model loader takes no abort signal.
@@ -321,6 +340,69 @@ The frame samples at half the finest voxel spacing. Half, not one, because a
 mask pixel must map back to a voxel index within half a voxel. Rounding to
 the nearest pixel costs up to 0.71 of a pitch on an oblique cut, where the
 plane axes miss the grid.
+
+### The session
+
+`src/core/segment/session.ts` holds the whole interaction model as pure
+functions over plain data. It has tests and it needs no browser.
+
+A session holds objects. An object holds cuts. A cut holds the prompts that
+you placed on one slice of one series, and the mask they made.
+
+A prompt keeps its patient coordinates and nothing else. To draw it, the
+overlay projects it into the frame of the pane it is looking at. To run it,
+the store projects it into the frame of the picture the model reads. Neither
+step stores a pixel, so no view change can break a prompt.
+
+Two prompts share a cut while they sit inside one voxel slab of that pane.
+`src/core/segment/slice.ts` holds that rule and the depth arithmetic.
+
+### Prompts across many slices
+
+SAM reads one 2D picture at a time. A prompt from another slice is not a
+prompt on this one, and this viewer never pretends that it is.
+
+So the prompts of one object group by the cut they were placed on. Each group
+runs on its own picture and returns its own 2D mask. The object is the set of
+those masks. Its size in cubic millimetres is the union of the voxels under
+them, so a voxel that two crossing masks cover counts once.
+
+### Growth through the slices
+
+SAM 2 and SAM 3 can follow an object through a video with a memory encoder
+and memory attention. Those graphs are not in the exports this viewer
+downloads. `onnx-community/sam3-tracker-ONNX` and
+`onnx-community/sam2.1-hiera-tiny-ONNX` each hold only `vision_encoder` and
+`prompt_encoder_mask_decoder`, and `Sam3TrackerModel` in transformers.js
+4.2.0 is an empty subclass of `Sam2Model` with no video session. Checked on
+2026-08-02.
+
+So **Grow through slices** re-prompts instead. It starts at the last slice
+you clicked, steps out one slice at a time on both sides, and builds the
+prompt for each new slice out of the mask of the slice before it: a point
+well inside that mask, and a box that is 12% wider than it.
+
+A walk that never stops draws a confident tube of nothing. `judgeSlice` in
+`src/core/segment/propagate.ts` stops it:
+
+| Test                                           | Cause       |
+| ---------------------------------------------- | ----------- |
+| The mask is empty                              | `vanished`  |
+| The mask is under 24 pixels                    | `collapsed` |
+| The mask is over 2.5 times the slice before    | `leaked`    |
+| The mask is under 0.4 of the slice before      | `collapsed` |
+| The mask is over 3 times the slice you clicked | `drifted`   |
+| The model rates its own mask under 0.5         | `low-score` |
+| 32 slices on this side                         | `limit`     |
+| No more slices in the volume                   | `edge`      |
+
+A slice that fails a test is dropped, not kept. The panel reports the cause
+for each side, because a structure that ended and a tracker that gave up are
+different facts.
+
+A slice you clicked draws with a solid edge. A slice the walk inferred draws
+with a broken edge and a fainter fill. A click on an inferred slice takes it
+over, and the model reads that slice again.
 
 ### Windowed pixels, not stored values
 
