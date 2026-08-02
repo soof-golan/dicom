@@ -19,6 +19,14 @@ Anonymize a study:
 
     uv run scripts/anonymize.py <source-dir> --out <out-dir> --salt <secret>
 
+The patient name becomes `Anonymous^Demo`. To keep a real name, which only the
+data subject may agree to, give both flags:
+
+    --patient-name "Family^Given" --keep-real-name
+
+`--keep-real-name` writes PatientIdentityRemoved NO, because the file is then
+not de-identified.
+
 Verify the result. The forbidden file holds one string per line. Keep that file
 out of the repository:
 
@@ -43,6 +51,8 @@ from pathlib import Path
 import pydicom
 from dicomanonymizer.dicomfields_selector import dicom_anonymization_database_selector
 from pydicom.dataset import Dataset
+from pydicom.multival import MultiValue
+from pydicom.uid import PYDICOM_IMPLEMENTATION_UID
 
 # The edition of PS3.15 that this script follows.
 STANDARD_EDITION = "dicomfields_2026c"
@@ -56,7 +66,11 @@ DEIDENTIFICATION_METHOD = [
     "scripts/anonymize.py",
 ]
 
-# PS3.16 Context ID 7050. 113100 is the basic profile.
+# Added when the caller keeps a real patient name. LO allows 64 bytes.
+RETAINED_NAME_METHOD = "Partial: patient name kept by the data subject choice"
+
+# PS3.16 Context ID 7050. 113100 is the basic profile. The code is written only
+# when the identity really is removed, because the code is a conformance claim.
 DEIDENTIFICATION_METHOD_CODE = ("113100", "DCM", "Basic Application Confidentiality Profile")
 
 # Attributes that the viewer needs. Most of them are outside Table E.1-1 and
@@ -142,6 +156,21 @@ KEPT_ATTRIBUTES = frozenset(
 CURVE_GROUPS = range(0x5000, 0x5100)
 OVERLAY_GROUPS = range(0x6000, 0x6100)
 
+# Sequences that point only at objects outside the export. Table E.1-1 says to
+# give the UIDs inside them new values, and a remap would do that. This script
+# removes the whole sequence instead. The references are dangling either way,
+# the viewer never reads them, and an absent sequence is one less place to
+# check. Nothing inside the study refers to these sequences.
+DROPPED_SEQUENCES = frozenset(
+    {
+        "ConversionSourceAttributesSequence",
+        "ReferencedImageSequence",
+        "ReferencedStudySequence",
+        "RelatedSeriesSequence",
+        "SourceImageSequence",
+    }
+)
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -167,14 +196,17 @@ def load_profile() -> Profile:
     """
     table = dicom_anonymization_database_selector(STANDARD_EDITION)
     remap = {tag for tag in table["U_TAGS"] if len(tag) == 2}
-    kept = {
-        (tag >> 16, tag & 0xFFFF)
-        for tag in (pydicom.datadict.tag_for_keyword(name) for name in KEPT_ATTRIBUTES)
-        if tag is not None
-    }
-    remove = {tag for tag in table["ALL_TAGS"] if len(tag) == 2} - remap - kept
+    remove = {tag for tag in table["ALL_TAGS"] if len(tag) == 2} - remap
+    remove -= tags_for(KEPT_ATTRIBUTES)
+    remove |= tags_for(DROPPED_SEQUENCES)
+    remap -= tags_for(DROPPED_SEQUENCES)
     masked = tuple(tag for tag in table["ALL_TAGS"] if len(tag) == 4)
     return Profile(frozenset(remove), frozenset(remap), masked)
+
+
+def tags_for(keywords: frozenset[str]) -> set[tuple[int, int]]:
+    numbers = (pydicom.datadict.tag_for_keyword(name) for name in keywords)
+    return {(tag >> 16, tag & 0xFFFF) for tag in numbers if tag is not None}
 
 
 def hashed_uid(uid: str, salt: str) -> str:
@@ -190,7 +222,7 @@ def hashed_uid(uid: str, salt: str) -> str:
 
 
 def remap_value(value: object, salt: str) -> object:
-    if isinstance(value, (list, pydicom.multival.MultiValue)):
+    if isinstance(value, (list, MultiValue)):
         return [hashed_uid(str(item), salt) for item in value if str(item)]
     text = str(value)
     return hashed_uid(text, salt) if text else value
@@ -218,38 +250,56 @@ def scrub(ds: Dataset, profile: Profile, salt: str) -> None:
                 scrub(item, profile, salt)
 
 
-def anonymize(ds: Dataset, profile: Profile, salt: str, patient_name: str) -> None:
-    """De-identify one file in place."""
+def anonymize(
+    ds: Dataset, profile: Profile, salt: str, patient_name: str, identity_removed: bool
+) -> None:
+    """De-identify one file in place.
+
+    `identity_removed` is what the file will claim in (0012,0062). Set it to
+    False when `patient_name` is a real name. A file that keeps a real name and
+    claims YES is a lie, and a reader who trusts the flag would republish an
+    identity by accident.
+    """
     scrub(ds, profile, salt)
 
     for name in (
         "SourceApplicationEntityTitle",
         "PrivateInformation",
         "PrivateInformationCreatorUID",
+        "ImplementationVersionName",
     ):
         if name in ds.file_meta:
             delattr(ds.file_meta, name)
     ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
     ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
+    # The source file named the scanner software here, under the Siemens root.
+    # This script writes the file now, so the writer is pydicom.
+    ds.file_meta.ImplementationClassUID = PYDICOM_IMPLEMENTATION_UID
 
     ds.PatientName = patient_name
     ds.PatientID = "DEMO"
-    ds.PatientIdentityRemoved = "YES"
-    ds.DeidentificationMethod = DEIDENTIFICATION_METHOD
 
-    code, scheme, meaning = DEIDENTIFICATION_METHOD_CODE
-    item = Dataset()
-    item.CodeValue = code
-    item.CodingSchemeDesignator = scheme
-    item.CodeMeaning = meaning
-    ds.DeidentificationMethodCodeSequence = [item]
+    if identity_removed:
+        ds.PatientIdentityRemoved = "YES"
+        ds.DeidentificationMethod = DEIDENTIFICATION_METHOD
+        code, scheme, meaning = DEIDENTIFICATION_METHOD_CODE
+        item = Dataset()
+        item.CodeValue = code
+        item.CodingSchemeDesignator = scheme
+        item.CodeMeaning = meaning
+        ds.DeidentificationMethodCodeSequence = [item]
+    else:
+        ds.PatientIdentityRemoved = "NO"
+        ds.DeidentificationMethod = [*DEIDENTIFICATION_METHOD, RETAINED_NAME_METHOD]
 
 
 def dicom_files(root: Path) -> list[Path]:
     return sorted(p for p in root.rglob("*.dcm") if p.is_file())
 
 
-def anonymize_tree(source: Path, out: Path, salt: str, patient_name: str) -> int:
+def anonymize_tree(
+    source: Path, out: Path, salt: str, patient_name: str, identity_removed: bool
+) -> int:
     profile = load_profile()
     files = dicom_files(source)
     if not files:
@@ -257,13 +307,16 @@ def anonymize_tree(source: Path, out: Path, salt: str, patient_name: str) -> int
 
     for path in files:
         ds = pydicom.dcmread(path)
-        anonymize(ds, profile, salt, patient_name)
+        anonymize(ds, profile, salt, patient_name, identity_removed)
         target = out / path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
         ds.save_as(target, enforce_file_format=True)
 
     print(f"anonymized {len(files)} files from {source} to {out}")
     print(f"profile: PS3.15 Annex E basic, table {STANDARD_EDITION}")
+    print(
+        f"patient name: {patient_name}, PatientIdentityRemoved: {'YES' if identity_removed else 'NO'}"
+    )
     return len(files)
 
 
@@ -273,7 +326,24 @@ class VerifyReport:
     forbidden: int = 0
     hits: list[str] = field(default_factory=list)
     private_tags: list[str] = field(default_factory=list)
-    not_marked: list[str] = field(default_factory=list)
+    unmapped_uids: list[str] = field(default_factory=list)
+    identity_flags: set[str] = field(default_factory=set)
+    study_uids: set[str] = field(default_factory=set)
+    frame_uids: set[str] = field(default_factory=set)
+    series_uids: set[str] = field(default_factory=set)
+    sop_uids: list[str] = field(default_factory=list)
+
+    def duplicate_sop_uids(self) -> int:
+        return len(self.sop_uids) - len(set(self.sop_uids))
+
+    def failed(self) -> bool:
+        return bool(
+            self.hits
+            or self.private_tags
+            or self.unmapped_uids
+            or self.duplicate_sop_uids()
+            or len(self.study_uids) != 1
+        )
 
 
 def read_forbidden(path: Path) -> list[str]:
@@ -299,6 +369,28 @@ def byte_needles(secret: str) -> list[bytes]:
     return [lowered.encode("latin-1", "ignore"), lowered.encode("utf-16-le")]
 
 
+def unmapped_uids(ds: Dataset) -> list[str]:
+    """UIDs that the remap did not touch.
+
+    A scanner UID such as `1.3.12.2.1107.5.2.18.42565.2026073113553...` carries
+    the device serial number and the minute of the scan. After the remap every
+    UID must be either a UID that DICOM itself registers, under 1.2.840.10008,
+    or a hash under the 2.25 root. Anything else came from the scanner.
+    """
+    found = []
+    for element in list(ds.file_meta) + list(ds.iterall()):
+        if element.VR != "UI" or element.value is None:
+            continue
+        # (0002,0012) names the library that wrote the file, not the scanner.
+        if element.tag == 0x00020012:
+            continue
+        values = element.value if isinstance(element.value, MultiValue) else [element.value]
+        for value in (str(v) for v in values):
+            if value and not value.startswith(("1.2.840.10008.", "2.25.")):
+                found.append(f"{element.tag} {value}")
+    return found
+
+
 def verify_tree(root: Path, forbidden: list[str]) -> VerifyReport:
     report = VerifyReport(forbidden=len(forbidden))
     needles = {secret: byte_needles(secret) for secret in forbidden}
@@ -321,8 +413,14 @@ def verify_tree(root: Path, forbidden: list[str]) -> VerifyReport:
         private = [str(el.tag) for el in ds.iterall() if el.tag.is_private]
         if private:
             report.private_tags.append(f"{path}: {', '.join(private)}")
-        if str(ds.get("PatientIdentityRemoved", "")) != "YES":
-            report.not_marked.append(str(path))
+        for uid in unmapped_uids(ds):
+            report.unmapped_uids.append(f"{path}: {uid}")
+
+        report.identity_flags.add(str(ds.get("PatientIdentityRemoved", "absent")))
+        report.study_uids.add(str(ds.StudyInstanceUID))
+        report.series_uids.add(str(ds.SeriesInstanceUID))
+        report.frame_uids.add(str(getattr(ds, "FrameOfReferenceUID", "")))
+        report.sop_uids.append(str(ds.SOPInstanceUID))
 
     return report
 
@@ -330,21 +428,26 @@ def verify_tree(root: Path, forbidden: list[str]) -> VerifyReport:
 def print_report(root: Path, report: VerifyReport) -> None:
     print()
     print(f"verification of {root}")
-    print(f"  files scanned      : {report.files}")
-    print(f"  forbidden strings  : {report.forbidden}")
-    print(f"  matches found      : {len(report.hits)}")
-    print(f"  private tags left  : {len(report.private_tags)}")
-    print(f"  files not marked   : {len(report.not_marked)}")
+    print(f"  files scanned        : {report.files}")
+    print(f"  forbidden strings    : {report.forbidden}")
+    print(f"  matches found        : {len(report.hits)}")
+    print(f"  private tags left    : {len(report.private_tags)}")
+    print(f"  scanner UIDs left    : {len(report.unmapped_uids)}")
+    print(f"  PatientIdentityRemoved: {', '.join(sorted(report.identity_flags))}")
+    print("  referential integrity")
+    print(f"    studies            : {len(report.study_uids)}")
+    print(f"    frames of reference: {len(report.frame_uids)}")
+    print(f"    series             : {len(report.series_uids)}")
+    print(f"    duplicate SOP UIDs : {report.duplicate_sop_uids()}")
 
     for line in report.hits[:20]:
         print(f"  FORBIDDEN STRING {line}")
     for line in report.private_tags[:20]:
         print(f"  PRIVATE TAG {line}")
-    for line in report.not_marked[:20]:
-        print(f"  NOT MARKED {line}")
+    for line in report.unmapped_uids[:20]:
+        print(f"  SCANNER UID {line}")
 
-    clean = not (report.hits or report.private_tags or report.not_marked)
-    print("  result             : PASS" if clean else "  result             : FAIL")
+    print("  result               : FAIL" if report.failed() else "  result               : PASS")
 
 
 def main() -> None:
@@ -354,7 +457,16 @@ def main() -> None:
     )
     parser.add_argument("--out", type=Path, help="Where to write the de-identified study")
     parser.add_argument("--salt", default="", help="Secret that the UID hash uses")
-    parser.add_argument("--patient-name", default="Anonymous^Demo")
+    parser.add_argument(
+        "--patient-name",
+        default="Anonymous^Demo",
+        help="Name to write into (0010,0010). Use a real name only with consent.",
+    )
+    parser.add_argument(
+        "--keep-real-name",
+        action="store_true",
+        help="Say that --patient-name is a real name. Writes PatientIdentityRemoved NO.",
+    )
     parser.add_argument(
         "--verify", action="store_true", help="Scan the result for forbidden strings"
     )
@@ -364,7 +476,7 @@ def main() -> None:
     if args.out:
         if not args.salt:
             raise SystemExit("--salt is required when writing. Without it the UIDs are guessable.")
-        anonymize_tree(args.source, args.out, args.salt, args.patient_name)
+        anonymize_tree(args.source, args.out, args.salt, args.patient_name, not args.keep_real_name)
 
     if not args.verify:
         return
@@ -374,7 +486,7 @@ def main() -> None:
     root = args.out or args.source
     report = verify_tree(root, read_forbidden(args.forbidden_file))
     print_report(root, report)
-    if report.hits or report.private_tags or report.not_marked:
+    if report.failed():
         sys.exit(1)
 
 
