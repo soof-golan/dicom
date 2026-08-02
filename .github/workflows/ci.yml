@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Installs the `vp` CLI, pins Node, and caches the pnpm store.
+      # The Vite+ version is read from the `vite-plus` catalog entry in
+      # pnpm-workspace.yaml, resolved through package.json + pnpm-lock.yaml.
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: true
+
+      - name: Format, lint, and type check
+        run: vp check
+
+      - name: Test
+        run: vp test --run

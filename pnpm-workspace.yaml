@@ -1,3 +1,7 @@
+# Build scripts of wrangler, the Cloudflare CLI. Both are first-party.
+allowBuilds:
+  esbuild: true
+  workerd: true
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.2.7
   vite-plus: 0.2.7
