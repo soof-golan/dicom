@@ -15,20 +15,20 @@
  * after an injury. Edema and an effusion are the signs of damage, and on T1
  * alone they hide.
  *
- * CAUTION: this is signal logic, not a diagnosis. It cannot tell a tendon from
- * cortical bone, because both give no signal on both sequences. It reports that
- * pair as one class, `dark`, and never guesses between them.
+ * CAUTION: this is signal logic, not a diagnosis. Two limits are built in, and
+ * both come from the physics, not from the code:
+ *
+ * - A tendon, a ligament and cortical bone give no signal on either sequence.
+ *   They are one class, `dark`, and the classifier never guesses between them.
+ * - Bone marrow and subcutaneous fat are both fat, and behave the same on both
+ *   sequences. They are one class, `fat`. An earlier version split them by T1
+ *   brightness. Measured against the reference elbow, every brightness cut kept
+ *   the same share of shallow and deep voxels, so the split carried no
+ *   information about where the fat was.
  */
+import { MUSCLE_LEVEL } from "./scale.ts";
 
-export type TissueClass =
-  | "background"
-  | "fat"
-  | "marrow"
-  | "muscle"
-  | "fluid"
-  | "edema"
-  | "dark"
-  | "unknown";
+export type TissueClass = "background" | "fat" | "muscle" | "fluid" | "edema" | "dark" | "unknown";
 
 export interface TissueInfo {
   readonly id: TissueClass;
@@ -48,15 +48,10 @@ export const TISSUE_INFO: Readonly<Record<TissueClass, TissueInfo>> = {
   },
   fat: {
     id: "fat",
-    name: "Fat",
-    covers: "Subcutaneous fat and fat between muscles.",
+    name: "Fat and marrow",
+    covers:
+      "Subcutaneous fat, fat between muscles, and fatty bone marrow. Marrow is fat inside bone, and no signal separates the two.",
     color: [0.96, 0.85, 0.55],
-  },
-  marrow: {
-    id: "marrow",
-    name: "Marrow",
-    covers: "Fatty bone marrow inside the humerus, radius, and ulna.",
-    color: [0.99, 0.93, 0.78],
   },
   muscle: {
     id: "muscle",
@@ -91,14 +86,7 @@ export const TISSUE_INFO: Readonly<Record<TissueClass, TissueInfo>> = {
   },
 };
 
-export const TISSUE_ORDER: readonly TissueClass[] = [
-  "dark",
-  "muscle",
-  "fat",
-  "marrow",
-  "fluid",
-  "edema",
-];
+export const TISSUE_ORDER: readonly TissueClass[] = ["dark", "muscle", "fat", "fluid", "edema"];
 
 /** One voxel, as normalized signal from each sequence. Each value is 0 to 1. */
 export interface Signal {
@@ -114,25 +102,57 @@ export interface Classified {
   readonly confidence: number;
 }
 
+/**
+ * Band edges for one sequence, on the muscle-anchored scale of `scale.ts`.
+ *
+ * Each sequence needs its own edges, because the two do not spread their
+ * tissues the same way. On T1 the bright class is fat, and fat reaches only
+ * about 1.4 times muscle. On a fat-saturated sequence the bright class is
+ * water, and water reaches three times muscle or more. One pair of edges
+ * cannot serve both: edges that catch fat on T1 would call ordinary muscle
+ * edema on the fat-saturated sequence.
+ */
 export interface Thresholds {
   /** Below this on every sequence, the voxel is outside the body. */
   readonly noise: number;
   readonly low: number;
   readonly high: number;
+  /** How far a value must sit from a band edge before confidence reaches 1. */
+  readonly margin: number;
 }
 
-export const DEFAULT_THRESHOLDS: Thresholds = { noise: 0.08, low: 0.32, high: 0.62 };
+/** Muscle reads `MUSCLE_LEVEL`, so 0.3 on this scale is one muscle. */
+const MUSCLE = MUSCLE_LEVEL;
 
 /**
- * T1 above this, in fat, reads as marrow instead.
+ * T1: `high` is where fat begins, at 1.4 times muscle.
  *
- * Marrow is fat inside bone. Its signal is the same fat signal, so nothing but
- * a bone mask separates the two. The brightest fat is reported as marrow.
+ * Measured on the coronal pair of the reference elbow: the voxels that fat
+ * saturation removes sit at 1.55 times muscle in the middle and 2.25 times at
+ * the ninth tenth. Below 0.7 times muscle a tissue is dark on T1, which covers
+ * cortical bone, tendon, ligament, and free fluid.
  */
-export const MARROW_T1 = 0.82;
+export const T1_THRESHOLDS: Thresholds = {
+  noise: 0.2 * MUSCLE,
+  low: 0.7 * MUSCLE,
+  high: 1.4 * MUSCLE,
+  margin: 0.17 * MUSCLE,
+};
 
-/** How far a value must sit from a band edge before confidence reaches 1. */
-export const MARGIN_SPAN = 0.15;
+/**
+ * Fat-saturated: `high` is where water begins, at 2.4 times muscle.
+ *
+ * Edema and an effusion are markedly brighter than muscle, not slightly. At the
+ * ninth tenth ordinary tissue reaches 2.1 times muscle on this sequence, so a
+ * lower edge paints the whole arm as edema. Below 0.73 times muscle the fat
+ * pulse has removed the signal, which is what marks fat.
+ */
+export const FATSAT_THRESHOLDS: Thresholds = {
+  noise: 0.2 * MUSCLE,
+  low: 0.73 * MUSCLE,
+  high: 2.4 * MUSCLE,
+  margin: 0.3 * MUSCLE,
+};
 
 /** One sequence cannot separate fat from fluid, so its confidence is halved. */
 export const SINGLE_PENALTY = 0.5;
@@ -155,15 +175,26 @@ export interface Cell {
  * |          | fat-sat low | fat-sat mid | fat-sat high |
  * | -------- | ----------- | ----------- | ------------ |
  * | T1 low   | cortex      | (none)      | fluid        |
- * | T1 mid   | muscle      | muscle      | edema        |
- * | T1 high  | fat, marrow | fat         | edema        |
+ * | T1 mid   | fat         | muscle      | edema        |
+ * | T1 high  | fat         | fat         | (none)       |
+ *
+ * The left column is fat, on both rows that carry signal. Fat saturation
+ * removes fat and nothing else, so a tissue that goes dark under the fat pulse
+ * is fat, whatever it did on T1. Reading only the T1 brightness misses the
+ * greater part of the subcutaneous rim, because a surface coil makes fat far
+ * from the coil no brighter than muscle near it.
+ *
+ * The two empty cells are real:
+ *
+ * - Dark on T1 with middling water signal fits no tissue cleanly.
+ * - Bright on T1 AND bright after fat saturation is not edema. Edema is water,
+ *   and water is never bright on T1. That pair means the fat pulse failed at
+ *   that place, or that blood is breaking down there. Painting it as edema put
+ *   pink over whole subcutaneous swathes.
  *
  * The table is the single source of truth. `classifyPair` reads it, and the
  * GLSL in `glsl.ts` is generated from it, so the shader and the classifier
  * cannot disagree about a rule or a number.
- *
- * The empty cell is real. Dark on T1 with middling water signal fits no tissue
- * cleanly, so the classifier says `unknown` instead of guessing.
  */
 export const SIGNAL_TABLE: Readonly<Record<Band, Readonly<Record<Band, Cell>>>> = {
   low: {
@@ -172,18 +203,18 @@ export const SIGNAL_TABLE: Readonly<Record<Band, Readonly<Record<Band, Cell>>>> 
     high: { tissue: "fluid", weight: 1 },
   },
   mid: {
-    low: { tissue: "muscle", weight: 1 },
+    low: { tissue: "fat", weight: 0.7 },
     mid: { tissue: "muscle", weight: 1 },
     high: { tissue: "edema", weight: 1 },
   },
   high: {
     low: { tissue: "fat", weight: 1 },
     mid: { tissue: "fat", weight: 0.7 },
-    high: { tissue: "edema", weight: 1 },
+    high: { tissue: "unknown", weight: 0 },
   },
 };
 
-export function band(value: number, t: Thresholds = DEFAULT_THRESHOLDS): Band {
+export function band(value: number, t: Thresholds): Band {
   if (value < t.low) return "low";
   if (value < t.high) return "mid";
   return "high";
@@ -192,25 +223,25 @@ export function band(value: number, t: Thresholds = DEFAULT_THRESHOLDS): Band {
 /** Distance from the nearest band edge, as confidence. */
 function margin(value: number, t: Thresholds): number {
   const nearest = Math.min(Math.abs(value - t.low), Math.abs(value - t.high));
-  return Math.min(1, nearest / MARGIN_SPAN);
+  return Math.min(1, nearest / t.margin);
 }
 
-/**
- * Classify one voxel from two sequences.
- *
- * The answer comes from `SIGNAL_TABLE`, with one refinement: the brightest fat
- * is reported as marrow.
- */
-export function classifyPair(signal: Signal, t: Thresholds = DEFAULT_THRESHOLDS): Classified {
+/** Classify one voxel from two sequences, through `SIGNAL_TABLE`. */
+export function classifyPair(
+  signal: Signal,
+  t1Bands: Thresholds = T1_THRESHOLDS,
+  fatBands: Thresholds = FATSAT_THRESHOLDS,
+): Classified {
   const { t1, pdfs } = signal;
-  if (t1 === undefined || pdfs === undefined) return classifySingle(signal, t);
+  if (t1 === undefined || pdfs === undefined) return classifySingle(signal, t1Bands, fatBands);
 
-  if (t1 < t.noise && pdfs < t.noise) return { tissue: "background", confidence: 1 };
+  if (t1 < t1Bands.noise && pdfs < fatBands.noise) return { tissue: "background", confidence: 1 };
 
-  const cell = SIGNAL_TABLE[band(t1, t)][band(pdfs, t)];
-  const confidence = Math.min(margin(t1, t), margin(pdfs, t)) * cell.weight;
-  const marrow = cell.tissue === "fat" && cell.weight === 1 && t1 > MARROW_T1;
-  return { tissue: marrow ? "marrow" : cell.tissue, confidence };
+  const cell = SIGNAL_TABLE[band(t1, t1Bands)][band(pdfs, fatBands)];
+  return {
+    tissue: cell.tissue,
+    confidence: Math.min(margin(t1, t1Bands), margin(pdfs, fatBands)) * cell.weight,
+  };
 }
 
 /**
@@ -219,20 +250,20 @@ export function classifyPair(signal: Signal, t: Thresholds = DEFAULT_THRESHOLDS)
  * One sequence cannot separate fat from fluid, so the result is coarse and the
  * confidence is capped. The viewer must say so.
  */
-export function classifySingle(signal: Signal, t: Thresholds = DEFAULT_THRESHOLDS): Classified {
+export function classifySingle(
+  signal: Signal,
+  t1Bands: Thresholds = T1_THRESHOLDS,
+  fatBands: Thresholds = FATSAT_THRESHOLDS,
+): Classified {
+  const fatSat = signal.pdfs !== undefined;
   const value = signal.pdfs ?? signal.t1;
+  const t = fatSat ? fatBands : t1Bands;
   if (value === undefined) return { tissue: "unknown", confidence: 0 };
   if (value < t.noise) return { tissue: "background", confidence: 1 };
 
   const confidence = margin(value, t) * SINGLE_PENALTY;
-  if (signal.pdfs !== undefined) {
-    // On a fat-saturated sequence, bright means water.
-    if (value >= t.high) return { tissue: "fluid", confidence };
-    if (value >= t.low) return { tissue: "muscle", confidence };
-    return { tissue: "dark", confidence };
-  }
-  // On T1, bright means fat.
-  if (value >= t.high) return { tissue: "fat", confidence };
+  // Bright means water on a fat-saturated sequence, and fat on T1.
+  if (value >= t.high) return { tissue: fatSat ? "fluid" : "fat", confidence };
   if (value >= t.low) return { tissue: "muscle", confidence };
   return { tissue: "dark", confidence };
 }
@@ -242,7 +273,6 @@ export function tally(classes: Iterable<TissueClass>): Record<TissueClass, numbe
   const counts: Record<TissueClass, number> = {
     background: 0,
     fat: 0,
-    marrow: 0,
     muscle: 0,
     fluid: 0,
     edema: 0,

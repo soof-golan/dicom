@@ -17,11 +17,10 @@
  */
 import {
   BANDS,
-  DEFAULT_THRESHOLDS,
-  MARGIN_SPAN,
-  MARROW_T1,
+  FATSAT_THRESHOLDS,
   SIGNAL_TABLE,
   SINGLE_PENALTY,
+  T1_THRESHOLDS,
   TISSUE_INFO,
   type Thresholds,
   type TissueClass,
@@ -38,17 +37,30 @@ function color(id: TissueClass): string {
 }
 
 /**
- * The color for one cell of the signal table.
+ * The band test and the confidence curve for one sequence.
  *
- * The fat cell that the rules fully trust also holds marrow, and the two are
- * split by brightness alone, so that split is written as a choice in the
- * shader.
+ * Each sequence carries its own edges, so each needs its own pair of functions.
+ * `suffix` names them apart: `tissueBandT1` and `tissueBandFat`.
  */
-function cellColor(tissue: TissueClass, weight: number): string {
-  if (tissue === "fat" && weight === 1) {
-    return `(t1 > ${f(MARROW_T1)} ? ${color("marrow")} : ${color("fat")})`;
-  }
-  return color(tissue);
+function bandFunctions(suffix: string, t: Thresholds): string {
+  return /* glsl */ `
+const float TISSUE_NOISE_${suffix} = ${f(t.noise)};
+const float TISSUE_LOW_${suffix} = ${f(t.low)};
+const float TISSUE_HIGH_${suffix} = ${f(t.high)};
+
+int tissueBand${suffix}(float value) {
+  if (value < TISSUE_LOW_${suffix}) return 0;
+  if (value < TISSUE_HIGH_${suffix}) return 1;
+  return 2;
+}
+
+// Confidence is the distance to the nearest band edge. A voxel that sits on an
+// edge could belong to either class, and the viewer must not claim otherwise.
+float tissueMargin${suffix}(float value) {
+  float nearest = min(abs(value - TISSUE_LOW_${suffix}), abs(value - TISSUE_HIGH_${suffix}));
+  return min(1.0, nearest / ${f(t.margin)});
+}
+`;
 }
 
 /**
@@ -57,11 +69,14 @@ function cellColor(tissue: TissueClass, weight: number): string {
  * The result declares `classifyTissue` and `classifyTissueSingle`. Both return
  * a color in `rgb` and a confidence from 0 to 1 in `a`.
  */
-export function tissueGlsl(t: Thresholds = DEFAULT_THRESHOLDS): string {
+export function tissueGlsl(
+  t1Bands: Thresholds = T1_THRESHOLDS,
+  fatBands: Thresholds = FATSAT_THRESHOLDS,
+): string {
   const table = BANDS.map((t1Band, row) => {
     const arms = BANDS.map((fatBand, column) => {
       const cell = SIGNAL_TABLE[t1Band][fatBand];
-      const value = `vec4(${cellColor(cell.tissue, cell.weight)}, confidence * ${f(cell.weight)})`;
+      const value = `vec4(${color(cell.tissue)}, confidence * ${f(cell.weight)})`;
       // The last band needs no test, because the bands cover every value.
       return column === BANDS.length - 1
         ? `    return ${value};`
@@ -71,30 +86,14 @@ export function tissueGlsl(t: Thresholds = DEFAULT_THRESHOLDS): string {
   }).join("\n");
 
   return /* glsl */ `
-const float TISSUE_NOISE = ${f(t.noise)};
-const float TISSUE_LOW = ${f(t.low)};
-const float TISSUE_HIGH = ${f(t.high)};
 const vec3 TISSUE_BACKGROUND = ${color("background")};
-
-int tissueBand(float value) {
-  if (value < TISSUE_LOW) return 0;
-  if (value < TISSUE_HIGH) return 1;
-  return 2;
-}
-
-// Confidence is the distance to the nearest band edge. A voxel that sits on an
-// edge could belong to either class, and the viewer must not claim otherwise.
-float tissueMargin(float value) {
-  float nearest = min(abs(value - TISSUE_LOW), abs(value - TISSUE_HIGH));
-  return min(1.0, nearest / ${f(MARGIN_SPAN)});
-}
-
+${bandFunctions("T1", t1Bands)}${bandFunctions("Fat", fatBands)}
 // Two sequences. This is the table from classify.ts, written out.
 vec4 classifyTissue(float t1, float fatsat) {
-  if (t1 < TISSUE_NOISE && fatsat < TISSUE_NOISE) return vec4(TISSUE_BACKGROUND, 1.0);
-  int a = tissueBand(t1);
-  int b = tissueBand(fatsat);
-  float confidence = min(tissueMargin(t1), tissueMargin(fatsat));
+  if (t1 < TISSUE_NOISE_T1 && fatsat < TISSUE_NOISE_Fat) return vec4(TISSUE_BACKGROUND, 1.0);
+  int a = tissueBandT1(t1);
+  int b = tissueBandFat(fatsat);
+  float confidence = min(tissueMarginT1(t1), tissueMarginFat(fatsat));
 ${table}
   return vec4(TISSUE_BACKGROUND, 0.0);
 }
@@ -102,9 +101,11 @@ ${table}
 // One sequence. Fat and fluid cannot be separated, so confidence is halved and
 // the classes are coarse.
 vec4 classifyTissueSingle(float value, bool isFatSat) {
-  if (value < TISSUE_NOISE) return vec4(TISSUE_BACKGROUND, 1.0);
-  float confidence = tissueMargin(value) * ${f(SINGLE_PENALTY)};
-  int a = tissueBand(value);
+  float noise = isFatSat ? TISSUE_NOISE_Fat : TISSUE_NOISE_T1;
+  if (value < noise) return vec4(TISSUE_BACKGROUND, 1.0);
+  float confidence =
+    (isFatSat ? tissueMarginFat(value) : tissueMarginT1(value)) * ${f(SINGLE_PENALTY)};
+  int a = isFatSat ? tissueBandFat(value) : tissueBandT1(value);
   if (a == 2) return vec4(isFatSat ? ${color("fluid")} : ${color("fat")}, confidence);
   if (a == 1) return vec4(${color("muscle")}, confidence);
   return vec4(${color("dark")}, confidence);
