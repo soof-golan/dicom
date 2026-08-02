@@ -61,7 +61,10 @@ describe("parseManifest", () => {
 
 describe("parseSidecar", () => {
   it("rejects a sidecar whose dims are not three numbers", () => {
-    const broken = { ...JSON.parse(JSON.stringify(entryFor("t1_tse_cor_DRB").full)), dims: [64, 64] };
+    const broken = {
+      ...JSON.parse(JSON.stringify(entryFor("t1_tse_cor_DRB").full)),
+      dims: [64, 64],
+    };
     expect(() => parseSidecar(broken)).toThrow(/dims/i);
   });
 
