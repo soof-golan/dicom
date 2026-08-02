@@ -1,5 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { TISSUE_INFO, TISSUE_ORDER } from "../core/tissue/classify.ts";
+import { STRUCTURE_INFO, STRUCTURE_ORDER } from "../core/tissue/structures.ts";
+import { useStructures } from "./tissue/store.ts";
 import { PLANE_IDS, standardPlane, type PlaneId } from "../core/view/planes.ts";
 import { findFusionCandidate } from "./loader/fuseStudy.ts";
 import { loadStudy, readDataTransfer, readDevStudy, readFiles } from "./loader/loadStudy.ts";
@@ -381,6 +383,94 @@ function TissueLegend() {
         Colors come from signal strength, not from anatomy. A gray pixel is one the classifier would
         not name.
       </p>
+
+      <StructureLegend />
+    </div>
+  );
+}
+
+/**
+ * The classes that shape named, kept apart from the classes that signal named.
+ *
+ * A reader must be able to tell the two claims apart. The colors above come
+ * from a signal difference that physics puts there. The colors below come from
+ * form and position, which is weaker, so they sit under their own heading with
+ * their own warning.
+ */
+function StructureLegend() {
+  const status = useStructures((state) => state.status);
+  const result = useStructures((state) => state.result);
+  const error = useStructures((state) => state.error);
+  const request = useStructures((state) => state.request);
+  const pair = useStudy((state) => state.pair);
+  const tissueMix = useStudy((state) => state.view.tissueMix);
+
+  // Naming dark structures costs seconds, so it waits for a reader who turned
+  // tissue color on. The worker answers once per pair.
+  useEffect(() => {
+    if (tissueMix > 0 && pair) request(pair.t1, pair.fatsat);
+  }, [tissueMix, pair, request]);
+
+  if (status === "idle") return null;
+
+  const found = new Set(
+    (result?.components ?? [])
+      .filter((component) => component.structure !== "dark")
+      .map((component) => component.structure),
+  );
+
+  return (
+    <div className="mt-3 border-t border-neutral-800 pt-2">
+      <p className="text-[11px] font-medium text-neutral-300">Named by shape, not by signal</p>
+      <p className="mt-1 text-[10px] leading-relaxed text-amber-400/80">
+        Cortex, tendon, ligament, and vessel give no signal at this echo time, so no threshold can
+        separate them. These four are separated by shape and by what each end touches. That is a
+        weaker claim than the classes above, and it can be wrong.
+      </p>
+
+      {status === "working" && <p className="mt-2 text-[11px] text-neutral-500">Reading shapes…</p>}
+      {status === "failed" && <p className="mt-2 text-[11px] text-red-300">{error}</p>}
+
+      {status === "ready" && result && (
+        <>
+          <ul className="mt-2 space-y-1">
+            {STRUCTURE_ORDER.filter((id) => id !== "dark").map((id) => (
+              <li key={id} className="flex items-start gap-2" title={STRUCTURE_INFO[id].covers}>
+                <span
+                  className="mt-0.5 size-2.5 shrink-0 rounded-sm"
+                  style={{
+                    backgroundColor: `rgb(${STRUCTURE_INFO[id].color
+                      .map((c) => Math.round(c * 255))
+                      .join(" ")})`,
+                    opacity: found.has(id) ? 1 : 0.25,
+                  }}
+                />
+                <span
+                  className={`text-[11px] leading-tight ${
+                    found.has(id) ? "text-neutral-400" : "text-neutral-600"
+                  }`}
+                >
+                  {STRUCTURE_INFO[id].name}
+                  {!found.has(id) && " — none found"}
+                </span>
+              </li>
+            ))}
+          </ul>
+
+          <p className="mt-2 text-[10px] leading-relaxed text-neutral-600">
+            Named {result.namedVoxels.toLocaleString()} of {result.darkVoxels.toLocaleString()} dark
+            voxels. The rest stayed unnamed, because naming them would be a guess.
+          </p>
+          <p className="mt-1 text-[10px] leading-relaxed text-neutral-600">
+            Bone reads as two claims: marrow above, from signal, and cortex here, from shape.
+          </p>
+          {result.warnings.map((warning) => (
+            <p key={warning} className="mt-1 text-[10px] leading-relaxed text-amber-400/70">
+              {warning}
+            </p>
+          ))}
+        </>
+      )}
     </div>
   );
 }

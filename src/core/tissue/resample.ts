@@ -21,8 +21,19 @@ export interface Sampler {
   normalizedAt(point: Vec3): number | undefined;
 }
 
+/**
+ * Anything laid out as one 3D grid of numbers.
+ *
+ * A `Volume` is one. So is a field of floats on the same grid. `trilinear`
+ * needs nothing else from either.
+ */
+export interface Grid {
+  readonly dims: readonly [number, number, number];
+  readonly data: { readonly [index: number]: number | undefined };
+}
+
 /** Trilinear read at a voxel coordinate. Returns `undefined` outside the grid. */
-export function trilinear(volume: Volume, voxel: Vec3): number | undefined {
+export function trilinear(volume: Grid, voxel: Vec3): number | undefined {
   const [nx, ny, nz] = volume.dims;
   const [x, y, z] = voxel;
   if (x < -0.5 || y < -0.5 || z < -0.5) return undefined;
