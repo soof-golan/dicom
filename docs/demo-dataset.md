@@ -295,9 +295,9 @@ JavaScript. Half of a rounding tie goes up, never to the even neighbor.
 | pd_tse_fs_sag_DRB | 512x512x41 | 21,495,808 |   9,262,382 |   5,373,952 |      2,373,835 |
 | **total**         |            | 85,917,696 |  39,049,157 |  21,479,424 |      8,007,243 |
 
-`manifest.json` is 11,931 bytes, or 1,346 bytes after brotli.
+`manifest.json` is 12,563 bytes, or 1,383 bytes after brotli.
 
-**Total published bytes: 49,057,746 after brotli.** That is 46.8 MiB for the
+**Total published bytes: 49,057,783 after brotli.** That is 46.8 MiB for the
 whole study, at both resolutions.
 
 The four previews are 8,007,243 bytes together. One preview is 2.0 MB to 3.2 MB,
