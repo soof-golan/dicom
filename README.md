@@ -10,7 +10,11 @@ The viewer reads DICOM files and builds a 3D volume from them. You can look at t
 
 The 3D view uses a CAD-style view cube. You drag the cube to rotate the camera. You click a face, an edge, or a corner of the cube to jump to that view.
 
-The viewer colors tissue types from the MRI signal. Bone, muscle, fat, fluid, and tendon each get a color. A separate tool segments a region when you click it or describe it in words.
+The viewer colors tissue from the MRI signal. It reads two sequences at once: a T1 and a fat-saturated one. One sequence cannot separate fat from fluid, and two can. Together they also show edema, which is the sign of an injury, and which T1 alone hides.
+
+Cortical bone, tendon, and ligament give no signal on either sequence. The viewer reports them as one class and never guesses between them. Where the signal fits no class, the pixel stays gray.
+
+A separate tool segments a region when you click it, draw a box, or describe it in words.
 
 ## Privacy
 
