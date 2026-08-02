@@ -9,6 +9,7 @@ import type { Vec3 } from "../core/geometry/vec3.ts";
 import type { PlaneId } from "../core/view/planes.ts";
 import { defaultWindow, patientBounds } from "../core/view/planes.ts";
 import { findSequencePair, type SequencePair } from "../core/tissue/sequence.ts";
+import { findFusionCandidate, fuseInWorker } from "./loader/fuseStudy.ts";
 import type { LoadedSeries } from "./loader/loadStudy.ts";
 import type { ViewerState } from "./viewer/VolumeScene.ts";
 
@@ -94,7 +95,11 @@ interface StudyStore {
   readonly defaults: ViewerState;
   readonly limits: ViewLimits;
 
+  /** True while the fusion worker runs. */
+  readonly fusing: boolean;
+
   readonly beginLoad: () => void;
+  readonly fuseSeries: () => Promise<void>;
   readonly setProgress: (progress: Progress) => void;
   readonly addSeries: (series: LoadedSeries) => void;
   readonly addSkipped: (name: string, reason: string) => void;
@@ -119,6 +124,46 @@ export const useStudy = create<StudyStore>((set, get) => ({
   view: INITIAL_VIEW,
   defaults: INITIAL_VIEW,
   limits: DEFAULT_LIMITS,
+  fusing: false,
+
+  /**
+   * Build one volume with cubic voxels and add it to the list.
+   *
+   * It joins the series rather than replacing any of them. It is finer through
+   * the slices and coarser inside them, so it answers a different question, and
+   * a reader must be able to go back.
+   */
+  fuseSeries: async () => {
+    const { series, fusing } = get();
+    if (fusing) return;
+    const candidate = findFusionCandidate(series.map((entry) => entry.volume));
+    if (!candidate) return;
+
+    set({ fusing: true, error: undefined });
+    try {
+      const volume = await fuseInWorker(candidate.volumes).result;
+      get().addSeries({
+        volume,
+        summary: {
+          seriesInstanceUid: volume.seriesInstanceUid,
+          description: volume.description,
+          modality: volume.modality,
+          number: 999,
+          sliceCount: volume.dims[2],
+          plane: "isotropic",
+          dims: volume.dims,
+          spacing: volume.spacing,
+        },
+      });
+      set({ fusing: false });
+      get().selectSeries(volume.seriesInstanceUid);
+    } catch (error) {
+      set({
+        fusing: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
 
   beginLoad: () =>
     set({
@@ -191,6 +236,7 @@ export const useStudy = create<StudyStore>((set, get) => ({
       skipped: [],
       activeUid: undefined,
       pair: undefined,
+      fusing: false,
       error: undefined,
       view: INITIAL_VIEW,
       defaults: INITIAL_VIEW,

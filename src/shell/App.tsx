@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { TISSUE_INFO, TISSUE_ORDER } from "../core/tissue/classify.ts";
 import { PLANE_IDS, standardPlane, type PlaneId } from "../core/view/planes.ts";
+import { findFusionCandidate } from "./loader/fuseStudy.ts";
 import { loadStudy, readDataTransfer, readDevStudy, readFiles } from "./loader/loadStudy.ts";
 import type { StudySource } from "./loader/messages.ts";
 import { pageHref, usePage } from "./routes.ts";
@@ -139,6 +140,40 @@ function SeriesList() {
         );
       })}
     </ul>
+  );
+}
+
+/**
+ * Offer to build one volume with cubic voxels.
+ *
+ * It appears only when the study holds two or more series of one sequence, cut
+ * at different angles. That is the case fusion can improve, and outside it the
+ * button would promise detail that no series measured.
+ */
+function FuseButton() {
+  const series = useStudy((state) => state.series);
+  const fusing = useStudy((state) => state.fusing);
+  const fuse = useStudy((state) => state.fuseSeries);
+
+  const candidate = findFusionCandidate(series.map((entry) => entry.volume));
+  const already = series.some((entry) => entry.volume.seriesInstanceUid.startsWith("fused:"));
+  if (!candidate || already) return null;
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        disabled={fusing}
+        onClick={() => void fuse()}
+        className="w-full rounded border border-neutral-800 px-2 py-1.5 text-[11px] text-neutral-400 transition-colors hover:border-neutral-600 hover:text-neutral-200 disabled:opacity-50"
+      >
+        {fusing ? "Combining…" : `Combine ${candidate.volumes.length} series`}
+      </button>
+      <p className="mt-1 text-[10px] leading-relaxed text-neutral-600">
+        Builds one volume with {candidate.spacing.toFixed(1)} mm cubic voxels. Cuts at an angle get
+        sharper. Detail inside a slice gets coarser, so the originals stay.
+      </p>
+    </div>
   );
 }
 
@@ -530,6 +565,7 @@ export function App() {
           <section>
             <h2 className="mb-1.5 text-[11px] uppercase tracking-wider text-neutral-500">Series</h2>
             <SeriesList />
+            <FuseButton />
           </section>
         )}
         {hasSeries && (

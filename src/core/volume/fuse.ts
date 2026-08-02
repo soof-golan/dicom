@@ -172,20 +172,22 @@ function bilinearInSlice(volume: Volume, x: number, y: number, k: number): numbe
 }
 
 /**
- * How much to trust one series at one point.
+ * Every series that reaches a point counts the same.
  *
- * A series measured its slices at whole values of k. Halfway between two of
- * them, every value is a guess, and that is where the through-plane blur is
- * worst. So a sample taken near a measured slice counts for more.
+ * A weighted average looked better on paper. A sample taken near a measured
+ * slice is more reliable than one halfway between two, so an earlier version
+ * weighted by that distance.
  *
- * The weight halves at half a slice away, which is the furthest a point can
- * be. Nothing is thrown away, because a distant sample is still real signal,
- * and a point that only one series reaches must still be filled.
+ * It made the result worse. The weights repeat with the slice step, about 3.3
+ * mm, while the output steps about 0.9 mm. Where two series disagree, and they
+ * disagree most exactly where each is blurred, the changing weights turned that
+ * disagreement into rings about four voxels apart. The rings were plainer than
+ * the blur they were meant to avoid.
+ *
+ * So the average is flat. It is also the honest one: nothing here says which
+ * series is right at a point, only that each measured it.
  */
-function sliceWeight(k: number): number {
-  const distance = Math.abs(k - Math.round(k));
-  return Math.pow(0.5, distance * 2);
-}
+const EQUAL_WEIGHT = 1;
 
 /**
  * Build one volume with cubic voxels from several series.
@@ -238,9 +240,8 @@ export function fuseVolumes(volumes: readonly Volume[], options: FusionOptions =
           const stored = near * (1 - between) + far * between;
 
           const signal = (stored - source.offset) * source.scale;
-          const w = sliceWeight(vz);
-          total += Math.max(0, Math.min(1, signal)) * w;
-          weight += w;
+          total += Math.max(0, Math.min(1, signal)) * EQUAL_WEIGHT;
+          weight += EQUAL_WEIGHT;
         }
 
         if (weight <= 0) continue;

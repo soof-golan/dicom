@@ -2,7 +2,17 @@ import { describe, expect, it } from "vite-plus/test";
 import { readSeries, SERIES_NAMES } from "../dicom/fixtures.ts";
 import { readInstance } from "../dicom/instance.ts";
 import { parseDicom } from "../dicom/parse.ts";
-import { applyAffine, length, subtract } from "../geometry/vec3.ts";
+import {
+  affineFromAxes,
+  applyAffine,
+  invertAffine,
+  length,
+  scale,
+  subtract,
+  type Vec3,
+} from "../geometry/vec3.ts";
+import { createSampler } from "../tissue/resample.ts";
+import type { Volume } from "./build.ts";
 import { buildVolume } from "./build.ts";
 import { FusionError, fuseVolumes, planFusion, shareFrameOfReference } from "./fuse.ts";
 
@@ -179,5 +189,136 @@ describe("what fusion is for", () => {
       // Weighted averaging commutes, so only rounding can differ.
       expect(Math.abs(forward.data[i]! - backward.data[i]!)).toBeLessThanOrEqual(1);
     }
+  });
+});
+
+/**
+ * Two series that disagree, cut at right angles.
+ *
+ * The real fixtures are three slices deep, which is too shallow to show a
+ * pattern that repeats with the slice step. These are built to be deep enough,
+ * and to disagree, because disagreement is what any uneven weighting turns
+ * into a visible ripple.
+ */
+function ramp(
+  along: "i" | "k",
+  axes: readonly [Vec3, Vec3, Vec3],
+  dims: readonly [number, number, number],
+): Volume {
+  const [nx, ny, nz] = dims;
+  const spacing: readonly [number, number, number] = [0.3, 0.3, 3.3];
+  const data = new Uint16Array(nx * ny * nz);
+  for (let k = 0; k < nz; k += 1) {
+    for (let j = 0; j < ny; j += 1) {
+      for (let i = 0; i < nx; i += 1) {
+        // A smooth ramp, so any roughness in the result came from fusion.
+        const t = along === "i" ? i / (nx - 1) : k / (nz - 1);
+        data[k * nx * ny + j * nx + i] = Math.round(400 + t * 3000);
+      }
+    }
+  }
+  return {
+    dims,
+    spacing,
+    origin: [0, 0, 0],
+    axes,
+    voxelToPatient: affineFromAxes(
+      scale(axes[0], spacing[0]),
+      scale(axes[1], spacing[1]),
+      scale(axes[2], spacing[2]),
+      [0, 0, 0],
+    ),
+    data,
+    signed: false,
+    rescaleSlope: 1,
+    rescaleIntercept: 0,
+    valueRange: { min: 400, max: 3400 },
+    description: "synthetic",
+    modality: "MR",
+    seriesInstanceUid: `synthetic-${along}-${axes[2].join(",")}`,
+    frameOfReferenceUid: "1.2.826.0.1.3680043.8.498.test",
+    warnings: [],
+  };
+}
+
+describe("banding at the slice period of a source", () => {
+  // Both cover the same box. One steps its slices along patient z, the other
+  // along patient x, so along x the first is smooth and the second crosses a
+  // measured slice every 3.3 mm.
+  const alongZ = ramp(
+    "i",
+    [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ],
+    [64, 64, 24],
+  );
+  const alongX = ramp(
+    "k",
+    [
+      [0, 1, 0],
+      [0, 0, 1],
+      [1, 0, 0],
+    ],
+    [64, 64, 24],
+  );
+
+  const fused = fuseVolumes([alongZ, alongX], { spacing: 0.9 });
+  const toVoxel = invertAffine(fused.voxelToPatient);
+
+  /** Read the fused volume along patient x, at a line inside both sources. */
+  function lineAlongX(): number[] {
+    const [nx, ny] = fused.dims;
+    const start = applyAffine(toVoxel, [0, 6, 6]);
+    const j = Math.round(start[1]);
+    const k = Math.round(start[2]);
+    const base = k * nx * ny + j * nx;
+    const values: number[] = [];
+    // The two boxes overlap over about 19 mm of x. Stay inside it.
+    for (let i = Math.round(start[0]); i < Math.round(start[0]) + 19; i += 1) {
+      values.push(fused.data[base + i] ?? 0);
+    }
+    return values;
+  }
+
+  /** Mean second difference. A ripple voxel to voxel makes this large. */
+  function roughness(values: readonly number[]): number {
+    let total = 0;
+    for (let i = 1; i < values.length - 1; i += 1) {
+      total += Math.abs(values[i - 1]! - 2 * values[i]! + values[i + 1]!);
+    }
+    return total / Math.max(values.length - 2, 1);
+  }
+
+  it("reads a line where both sources contribute and they disagree", () => {
+    // Without this the smoothness test below would pass for the wrong reason.
+    // Two sources that agree, or a line only one of them reaches, ripple
+    // however they are weighted.
+    const a = createSampler(alongZ);
+    const b = createSampler(alongX);
+    let both = 0;
+    let differ = 0;
+    for (let step = 0; step < 19; step += 1) {
+      const point: Vec3 = [step, 6, 6];
+      const first = a.normalizedAt(point);
+      const second = b.normalizedAt(point);
+      if (first === undefined || second === undefined) continue;
+      both += 1;
+      if (Math.abs(first - second) > 0.15) differ += 1;
+    }
+    expect(both).toBeGreaterThan(15);
+    expect(differ).toBeGreaterThan(10);
+  });
+
+  it("stays smooth where both sources are smooth", () => {
+    // Both inputs are ramps, so a correct fusion of them is smooth too. An
+    // earlier version weighted each sample by its distance to a measured
+    // slice. Those weights repeat with the slice step, so where the sources
+    // disagreed the blend rang at about four voxels, and the rings were
+    // plainer than the blur they were meant to avoid.
+    const values = lineAlongX();
+    expect(values.filter((v) => v > 0).length).toBeGreaterThan(15);
+    expect(roughness(values)).toBeLessThan(60);
   });
 });
