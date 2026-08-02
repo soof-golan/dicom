@@ -17,6 +17,7 @@ import type { Volume } from "../volume/build.ts";
 import { decodeRle } from "./mask.ts";
 import { nextColour } from "./palette.ts";
 import { maskVoxelIndices } from "./project.ts";
+import type { StopCause } from "./propagate.ts";
 import { onCut, planeNormal, promptOpacity, sameCut, sliceKey } from "./slice.ts";
 import type { MaskFrame, RleMask } from "./types.ts";
 
@@ -44,6 +45,14 @@ export interface MaskPart {
   readonly score: number;
 }
 
+/**
+ * Who put a mask on a slice.
+ *
+ * A slice the user clicked and a slice a walk inferred are different claims.
+ * The interface must never show them the same way.
+ */
+export type CutOrigin = "user" | "grown";
+
 /** Every prompt that one object has on one cut, and the mask they made. */
 export interface PromptCut {
   readonly key: string;
@@ -51,10 +60,23 @@ export interface PromptCut {
   readonly seriesUid: string;
   /** Millimetres along the plane normal. This is what names the slice. */
   readonly depth: number;
+  readonly origin: CutOrigin;
   readonly points: readonly Anchor[];
   readonly box: BoxAnchor | undefined;
   /** Nothing while the model runs, or after a prompt changed. */
   readonly part: MaskPart | undefined;
+}
+
+/** What one walk through the slices did, and why it stopped. */
+export interface Growth {
+  readonly plane: PlaneId;
+  readonly seedDepth: number;
+  /** How many grown slices the walk kept, over both sides. */
+  readonly kept: number;
+  /** How far the object reaches through the slices, in millimetres. */
+  readonly reachMillimetres: number;
+  readonly up: StopCause;
+  readonly down: StopCause;
 }
 
 /** One thing the user is building. The user names it; nothing else does. */
@@ -64,6 +86,8 @@ export interface SegmentObject {
   readonly colour: string;
   readonly hidden: boolean;
   readonly cuts: readonly PromptCut[];
+  /** The last walk through the slices, or nothing when none ran. */
+  readonly growth: Growth | undefined;
 }
 
 /** The cut whose mask the shell must ask the model for. */
@@ -147,6 +171,7 @@ export function addObject(session: Session, label?: string): Session {
     colour: nextColour(session.objects.map((entry) => entry.colour)),
     hidden: false,
     cuts: [],
+    growth: undefined,
   };
   return {
     ...session,
@@ -207,12 +232,13 @@ function cutFor(
   );
 }
 
-function emptyCut(place: PromptPlace): PromptCut {
+function emptyCut(place: PromptPlace, origin: CutOrigin): PromptCut {
   return {
     key: sliceKey(place),
     plane: place.plane,
     seriesUid: place.seriesUid,
     depth: place.depth,
+    origin,
     points: [],
     box: undefined,
     part: undefined,
@@ -235,8 +261,10 @@ function withPrompt(
   const started = session.activeId === undefined ? addObject(session) : session;
   const object = activeObject(started)!;
   const existing = cutFor(object, place, thickness);
-  const base = existing ?? emptyCut(place);
-  const updated: PromptCut = { ...change(base), part: undefined };
+  const base = existing ?? emptyCut(place, "user");
+  // A click on a grown slice takes it over. The user has corrected the walk,
+  // and the slice now carries a claim they made themselves.
+  const updated: PromptCut = { ...change(base), origin: "user", part: undefined };
   const cuts = existing
     ? object.cuts.map((cut) => (cut.key === existing.key ? updated : cut))
     : [...object.cuts, updated];
@@ -318,10 +346,61 @@ export function attachPart(
   };
 }
 
+/**
+ * Put a mask on a slice that a walk reached, not the user.
+ *
+ * The slice carries no prompt, so nothing waits for the model. A walk that
+ * reaches the same slice twice replaces what it left there before.
+ */
+export function addGrown(
+  session: Session,
+  objectId: string,
+  place: PromptPlace,
+  part: MaskPart,
+): Session {
+  const object = findObject(session, objectId);
+  if (!object) return session;
+  const cut: PromptCut = { ...emptyCut(place, "grown"), part };
+  const existing = object.cuts.find((entry) => entry.key === cut.key);
+  const cuts = existing
+    ? object.cuts.map((entry) => (entry.key === cut.key ? cut : entry))
+    : [...object.cuts, cut];
+  return {
+    ...session,
+    objects: session.objects.map((entry) => (entry.id === objectId ? { ...entry, cuts } : entry)),
+  };
+}
+
+/** Take away every slice a walk made, and keep every slice the user clicked. */
+export function clearGrown(session: Session, objectId: string): Session {
+  return edit(session, objectId, (object) => ({
+    ...object,
+    cuts: object.cuts.filter((cut) => cut.origin === "user"),
+    growth: undefined,
+  }));
+}
+
+/** Record what a walk did, so the panel can say why it stopped. */
+export function setGrowth(session: Session, objectId: string, growth: Growth): Session {
+  return edit(session, objectId, (object) => ({ ...object, growth }));
+}
+
+/** How many slices of an object the user clicked, and how many a walk made. */
+export function cutCounts(object: SegmentObject): { user: number; grown: number } {
+  let user = 0;
+  let grown = 0;
+  for (const cut of object.cuts) {
+    if (cut.origin === "user") user += 1;
+    else grown += 1;
+  }
+  return { user, grown };
+}
+
 export interface VisiblePart {
   readonly objectId: string;
   readonly colour: string;
   readonly active: boolean;
+  readonly origin: CutOrigin;
   readonly part: MaskPart;
 }
 
@@ -348,6 +427,7 @@ export function visibleParts(
         objectId: object.id,
         colour: object.colour,
         active: object.id === session.activeId,
+        origin: cut.origin,
         part: cut.part,
       });
     }

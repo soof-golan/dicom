@@ -10,10 +10,12 @@ import { SEGMENT_COLOURS } from "./palette.ts";
 import { framePixelToPatient, sliceFrame } from "./project.ts";
 import {
   activeObject,
+  addGrown,
   addObject,
   addPoint,
   attachPart,
   canUndo,
+  clearGrown,
   emptySession,
   findCut,
   objectVolumeCubicMillimeters,
@@ -22,6 +24,7 @@ import {
   renameObject,
   selectObject,
   setBox,
+  setGrowth,
   setObjectHidden,
   undo,
   UNDO_DEPTH,
@@ -425,5 +428,111 @@ describe("objectVolumeCubicMillimeters", () => {
     );
     expect(both).toBeGreaterThan(Math.max(axialOnly, coronalOnly));
     expect(both).toBeLessThan(axialOnly + coronalOnly);
+  });
+});
+
+describe("addGrown", () => {
+  it("marks a slice the model inferred apart from a slice the user clicked", () => {
+    const session = clickWithMask();
+    const grown = addGrown(session, session.objects[0]!.id, place("axial", 1), square("axial", 1));
+    expect(grown.objects[0]!.cuts.map((cut) => cut.origin)).toEqual(["user", "grown"]);
+  });
+
+  it("leaves no prompts on a grown slice, because the user placed none", () => {
+    const session = clickWithMask();
+    const grown = addGrown(session, session.objects[0]!.id, place("axial", 1), square("axial", 1));
+    expect(grown.objects[0]!.cuts[1]!.points).toHaveLength(0);
+  });
+
+  it("asks the model for nothing, so a grown slice never waits", () => {
+    const session = clickWithMask();
+    const grown = addGrown(session, session.objects[0]!.id, place("axial", 1), square("axial", 1));
+    expect(grown.pending).toBeUndefined();
+  });
+
+  it("counts toward the size of the object", () => {
+    const session = clickWithMask();
+    const alone = objectVolumeCubicMillimeters(volume, session.objects[0]!);
+    const grown = addGrown(session, session.objects[0]!.id, place("axial", 4), square("axial", 4));
+    expect(objectVolumeCubicMillimeters(volume, grown.objects[0]!)).toBeGreaterThan(alone);
+  });
+
+  it("replaces a grown slice that a later walk reaches again", () => {
+    const session = clickWithMask();
+    const once = addGrown(session, session.objects[0]!.id, place("axial", 1), square("axial", 1));
+    const twice = addGrown(once, session.objects[0]!.id, place("axial", 1), square("axial", 1, 3));
+    expect(twice.objects[0]!.cuts).toHaveLength(2);
+  });
+});
+
+describe("a click on a grown slice", () => {
+  it("turns the slice into one the user owns", () => {
+    const session = clickWithMask();
+    const grown = addGrown(session, session.objects[0]!.id, place("axial", 1), square("axial", 1));
+    const corrected = click(grown, place("axial", 1, 0.45)).session;
+    expect(corrected.objects[0]!.cuts[1]!.origin).toBe("user");
+    expect(corrected.objects[0]!.cuts[1]!.points).toHaveLength(1);
+  });
+
+  it("asks the model to read that slice again", () => {
+    const session = clickWithMask();
+    const grown = addGrown(session, session.objects[0]!.id, place("axial", 1), square("axial", 1));
+    expect(click(grown, place("axial", 1, 0.45)).session.pending).toBeDefined();
+  });
+});
+
+describe("clearGrown", () => {
+  it("takes away every grown slice and keeps every clicked one", () => {
+    let session = clickWithMask();
+    const id = session.objects[0]!.id;
+    session = addGrown(session, id, place("axial", 1), square("axial", 1));
+    session = addGrown(session, id, place("axial", 2), square("axial", 2));
+    const cleared = clearGrown(session, id);
+    expect(cleared.objects[0]!.cuts).toHaveLength(1);
+    expect(cleared.objects[0]!.cuts[0]!.origin).toBe("user");
+  });
+
+  it("forgets the record of the walk that made them", () => {
+    let session = clickWithMask();
+    const id = session.objects[0]!.id;
+    session = setGrowth(session, id, {
+      plane: "axial",
+      seedDepth: 0,
+      kept: 2,
+      reachMillimetres: 6,
+      up: "vanished",
+      down: "edge",
+    });
+    expect(clearGrown(session, id).objects[0]!.growth).toBeUndefined();
+  });
+});
+
+describe("setGrowth", () => {
+  it("keeps why the walk stopped on each side", () => {
+    const session = clickWithMask();
+    const told = setGrowth(session, session.objects[0]!.id, {
+      plane: "axial",
+      seedDepth: 3,
+      kept: 5,
+      reachMillimetres: 16.5,
+      up: "leaked",
+      down: "edge",
+    });
+    expect(told.objects[0]!.growth!.up).toBe("leaked");
+    expect(told.objects[0]!.growth!.down).toBe("edge");
+  });
+});
+
+describe("visibleParts with grown slices", () => {
+  it("says which slices the user clicked and which the model inferred", () => {
+    const session = clickWithMask();
+    const grown = addGrown(
+      session,
+      session.objects[0]!.id,
+      place("axial", 0.05),
+      square("axial", 0),
+    );
+    const found = visibleParts(grown, "axial", depthAt("axial"), THICK * 40);
+    expect(found.map((entry) => entry.origin).sort()).toEqual(["grown", "user"]);
   });
 });

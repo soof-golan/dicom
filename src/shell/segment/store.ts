@@ -17,17 +17,30 @@ import { create } from "zustand";
 import { formatBytes, planFor, textPlanFor } from "../../core/segment/plan.ts";
 import type { ModelPlan, TextPlan } from "../../core/segment/plan.ts";
 import { encodeRle } from "../../core/segment/mask.ts";
+import type { Mask } from "../../core/segment/types.ts";
 import {
   framePixelToPatient,
   patientToFramePixel,
   sampleSliceGray,
   sliceFrame,
 } from "../../core/segment/project.ts";
+import { decodeRle, maskArea } from "../../core/segment/mask.ts";
 import {
+  DEFAULT_GROWTH,
+  growthDepths,
+  interiorPoint,
+  judgeSlice,
+  promptBox,
+  tidyMask,
+  type StopCause,
+} from "../../core/segment/propagate.ts";
+import {
+  addGrown,
   addObject,
   addPoint,
   attachPart,
   clearCut,
+  clearGrown,
   cutCursor,
   emptySession,
   findCut,
@@ -37,6 +50,7 @@ import {
   renameObject,
   selectObject,
   setBox,
+  setGrowth,
   setObjectHidden,
   undo,
   type PromptCut,
@@ -44,7 +58,13 @@ import {
   type SegmentObject,
   type Session,
 } from "../../core/segment/session.ts";
-import { cutAtDepth, depthOf, outsideVolume, sliceThickness } from "../../core/segment/slice.ts";
+import {
+  cutAtDepth,
+  depthOf,
+  depthRange,
+  outsideVolume,
+  sliceThickness,
+} from "../../core/segment/slice.ts";
 import type { BoxPrompt, MaskFrame, PointPrompt, Window } from "../../core/segment/types.ts";
 import type { Vec3 } from "../../core/geometry/vec3.ts";
 import { patientBounds, type PlaneId } from "../../core/view/planes.ts";
@@ -74,6 +94,8 @@ interface SegmentStore {
   readonly polarity: "positive" | "negative";
   readonly busy: boolean;
   readonly session: Session;
+  /** How a walk through the slices is going, or nothing when none runs. */
+  readonly growing: GrowthProgress | undefined;
 
   readonly probe: () => Promise<void>;
   readonly loadModel: () => Promise<void>;
@@ -91,6 +113,17 @@ interface SegmentStore {
   readonly undo: () => void;
   readonly clearCut: (objectId: string, cutKey: string) => void;
   readonly goToCut: (objectId: string, cutKey: string) => void;
+  readonly grow: () => void;
+  readonly stopGrowing: () => void;
+}
+
+export interface GrowthProgress {
+  readonly objectId: string;
+  /** How many slices the walk has read. */
+  readonly done: number;
+  /** The most it can read. It usually stops sooner, and that is the point. */
+  readonly total: number;
+  readonly millimetresPerSlice: number;
 }
 
 const IDLE_PROGRESS: LoadProgress = {
@@ -154,6 +187,19 @@ function stop(): void {
   client?.dispose();
   client = undefined;
   encodedKey = undefined;
+}
+
+/** Set while the user asks a walk to stop. The walk reads it each slice. */
+let cancelGrowth = false;
+
+/**
+ * The slice a walk starts from.
+ *
+ * It is the newest slice the user clicked that already carries a mask. A walk
+ * must never start from a slice that the model has not read.
+ */
+function seedOf(object: SegmentObject): PromptCut | undefined {
+  return object.cuts.filter((cut) => cut.origin === "user" && cut.part).at(-1);
 }
 
 export const useSegment = create<SegmentStore>((set, get) => {
@@ -248,6 +294,136 @@ export const useSegment = create<SegmentStore>((set, get) => {
     return series ? sliceThickness(series.volume, plane) : 1;
   }
 
+  /**
+   * Walk out from a seed slice, one slice at a time, on one side.
+   *
+   * The prompt for each new slice comes from the mask of the slice before it:
+   * a point well inside it, and a box a little wider than it. Nothing else
+   * carries over, because the model reads a new picture each time.
+   */
+  async function walk(
+    objectId: string,
+    volume: Volume,
+    seed: PromptCut,
+    seedMask: Mask,
+    direction: 1 | -1,
+    step: number,
+    onSlice: () => void,
+  ): Promise<{ cause: StopCause; kept: number }> {
+    const depths = growthDepths(
+      seed.depth,
+      step,
+      direction,
+      DEFAULT_GROWTH.maxSlices,
+      depthRange(volume, seed.plane),
+    );
+    let previous = tidyMask(seedMask);
+    let previousArea = maskArea(previous);
+    let kept = 0;
+
+    for (const depth of depths) {
+      if (cancelGrowth) return { cause: "limit", kept };
+      const seedPoint = interiorPoint(previous);
+      const box = promptBox(previous, DEFAULT_GROWTH.boxMargin);
+      if (!seedPoint || !box) return { cause: "vanished", kept };
+
+      const cut: PromptCut = { ...seed, key: `${seed.key}|grown${depth.toFixed(3)}`, depth };
+      const picture = pictureFor(volume, cut, currentWindow());
+      await client!.encode(picture.gray, picture.frame.width, picture.frame.height);
+      encodedKey = undefined;
+
+      const answer = await client!.decode(
+        [{ kind: "point", x: seedPoint.x, y: seedPoint.y, positive: true }],
+        { kind: "box", x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1 },
+      );
+      onSlice();
+      if (!answer) return { cause: "vanished", kept };
+
+      const candidate: Mask = {
+        width: answer.width,
+        height: answer.height,
+        data: answer.data,
+      };
+      const area = maskArea(candidate);
+      const cause = judgeSlice(previousArea, area, answer.score, DEFAULT_GROWTH);
+      if (cause) return { cause, kept };
+
+      set({
+        session: addGrown(
+          get().session,
+          objectId,
+          {
+            plane: seed.plane,
+            seriesUid: seed.seriesUid,
+            depth,
+            patient: framePixelToPatient(picture.frame, seedPoint.x, seedPoint.y),
+          },
+          { frame: picture.frame, mask: encodeRle(candidate), score: answer.score },
+        ),
+      });
+      kept += 1;
+      previous = tidyMask(candidate);
+      previousArea = area;
+    }
+    return { cause: depths.length < DEFAULT_GROWTH.maxSlices ? "edge" : "limit", kept };
+  }
+
+  /** Grow the active object through the slices on both sides of its seed. */
+  async function runGrowth(): Promise<void> {
+    const session = get().session;
+    const object = session.objects.find((entry) => entry.id === session.activeId);
+    const seed = object ? seedOf(object) : undefined;
+    if (!object || !seed?.part) {
+      set({ error: "Click on a slice and wait for its mask before you grow the object." });
+      return;
+    }
+    const volume = volumeOf(seed.seriesUid);
+    if (!volume) {
+      set({ error: "The series that holds this prompt is gone. Nothing ran." });
+      return;
+    }
+
+    cancelGrowth = false;
+    const step = sliceThickness(volume, seed.plane);
+    let done = 0;
+    set({
+      error: undefined,
+      note: undefined,
+      session: clearGrown(session, object.id),
+      growing: {
+        objectId: object.id,
+        done: 0,
+        total: DEFAULT_GROWTH.maxSlices * 2,
+        millimetresPerSlice: step,
+      },
+    });
+
+    const onSlice = (): void => {
+      done += 1;
+      const growing = get().growing;
+      if (growing) set({ growing: { ...growing, done } });
+    };
+
+    try {
+      const seedMask = decodeRle(seed.part.mask);
+      const up = await walk(object.id, volume, seed, seedMask, 1, step, onSlice);
+      const down = await walk(object.id, volume, seed, seedMask, -1, step, onSlice);
+      set({
+        growing: undefined,
+        session: setGrowth(get().session, object.id, {
+          plane: seed.plane,
+          seedDepth: seed.depth,
+          kept: up.kept + down.kept,
+          reachMillimetres: (up.kept + down.kept + 1) * step,
+          up: up.cause,
+          down: down.cause,
+        }),
+      });
+    } catch (error) {
+      set({ growing: undefined, error: messageOf(error) });
+    }
+  }
+
   return {
     status: "idle",
     plan: undefined,
@@ -261,6 +437,7 @@ export const useSegment = create<SegmentStore>((set, get) => {
     polarity: "positive",
     busy: false,
     session: emptySession(),
+    growing: undefined,
 
     /** Ask the machine what it can run. Nothing downloads yet. */
     probe: async () => {
@@ -355,6 +532,7 @@ export const useSegment = create<SegmentStore>((set, get) => {
         plane,
         seriesUid: series.summary.seriesInstanceUid,
         depth,
+        origin: "user",
         points: [],
         box: undefined,
         part: undefined,
@@ -403,6 +581,21 @@ export const useSegment = create<SegmentStore>((set, get) => {
     },
 
     clearCut: (objectId, cutKey) => set({ session: clearCut(get().session, objectId, cutKey) }),
+
+    /**
+     * Grow the active object through the slices around its seed.
+     *
+     * This is a button and not something a click starts on its own. One walk
+     * reads up to 64 slices through the vision encoder, and a user who is
+     * still placing clicks must not pay for that on every one of them.
+     */
+    grow: () => {
+      chain = chain.then(runGrowth);
+    },
+
+    stopGrowing: () => {
+      cancelGrowth = true;
+    },
 
     /** Move the cursor to the slice a prompt was placed on, so it shows again. */
     goToCut: (objectId, cutKey) => {

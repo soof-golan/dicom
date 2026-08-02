@@ -10,7 +10,14 @@
  * voxel slab, and the model reads that cut once for both.
  */
 import { dot, scale, type Vec3 } from "../geometry/vec3.ts";
-import { NO_PAN, standardPlane, type Bounds, type CutPlane, type PlaneId } from "../view/planes.ts";
+import {
+  NO_PAN,
+  patientBounds,
+  standardPlane,
+  type Bounds,
+  type CutPlane,
+  type PlaneId,
+} from "../view/planes.ts";
 import type { Volume } from "../volume/build.ts";
 import { voxelExtentAlong } from "./project.ts";
 
@@ -48,6 +55,29 @@ export function cutAtDepth(volume: Volume, id: PlaneId, depth: number): CutPlane
 /** How thick the voxel slab under a standard pane is, in millimetres. */
 export function sliceThickness(volume: Volume, id: PlaneId): number {
   return voxelExtentAlong(volume, planeNormal(volume, id));
+}
+
+/**
+ * The depths of a pane that hold data.
+ *
+ * The volume is a rotated box, so the ends come from its eight corners and not
+ * from its dimensions. A walk that leaves this range reads only black.
+ */
+export function depthRange(volume: Volume, id: PlaneId): { min: number; max: number } {
+  const normal = planeNormal(volume, id);
+  const bounds = patientBounds(volume);
+  let min = Infinity;
+  let max = -Infinity;
+  for (const x of [bounds.min[0], bounds.max[0]]) {
+    for (const y of [bounds.min[1], bounds.max[1]]) {
+      for (const z of [bounds.min[2], bounds.max[2]]) {
+        const depth = dot([x, y, z], normal);
+        min = Math.min(min, depth);
+        max = Math.max(max, depth);
+      }
+    }
+  }
+  return { min, max };
 }
 
 /** Two depths name one cut while they sit inside one voxel slab. */

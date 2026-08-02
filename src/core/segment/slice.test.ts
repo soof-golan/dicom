@@ -3,12 +3,13 @@ import { readSeries } from "../dicom/fixtures.ts";
 import { readInstance } from "../dicom/instance.ts";
 import { parseDicom } from "../dicom/parse.ts";
 import { dot } from "../geometry/vec3.ts";
-import { PLANE_IDS, standardPlane } from "../view/planes.ts";
+import { patientBounds, PLANE_IDS, standardPlane } from "../view/planes.ts";
 import { buildVolume } from "../volume/build.ts";
 import { framePixelToPatient, sliceFrame } from "./project.ts";
 import {
   cutAtDepth,
   depthOf,
+  depthRange,
   groupByCut,
   onCut,
   planeNormal,
@@ -70,6 +71,23 @@ describe("depthOf", () => {
       const patient = framePixelToPatient(frame, x!, y!);
       expect(depthOf(volume, "sagittal", patient)).toBeCloseTo(12, 9);
     }
+  });
+});
+
+describe("depthRange", () => {
+  it("holds every cut that shows data, and no more", () => {
+    for (const id of PLANE_IDS) {
+      const range = depthRange(volume, id);
+      const centre = depthOf(volume, id, patientBounds(volume).center);
+      expect(range.min).toBeLessThan(centre);
+      expect(range.max).toBeGreaterThan(centre);
+    }
+  });
+
+  it("is as wide as the volume along that direction", () => {
+    const range = depthRange(volume, "axial");
+    const bounds = patientBounds(volume);
+    expect(range.max - range.min).toBeCloseTo(bounds.max[2]! - bounds.min[2]!, 6);
   });
 });
 

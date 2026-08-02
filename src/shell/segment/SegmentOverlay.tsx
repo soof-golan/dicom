@@ -19,7 +19,7 @@ import {
   patientToFramePixel,
   resampleMask,
 } from "../../core/segment/project.ts";
-import { boxMarks, promptMarks, visibleParts } from "../../core/segment/session.ts";
+import { boxMarks, promptMarks, visibleParts, type CutOrigin } from "../../core/segment/session.ts";
 import { depthOf, sliceThickness } from "../../core/segment/slice.ts";
 import type { Mask, MaskFrame } from "../../core/segment/types.ts";
 import { standardPlane, type PlaneId } from "../../core/view/planes.ts";
@@ -38,10 +38,17 @@ interface Band {
   y: number;
 }
 
-/** Paint one mask into the image, tinted inside and solid on the edge. */
-function paint(image: ImageData, mask: Mask, pane: Pane, colour: string): void {
+/**
+ * Paint one mask into the image, tinted inside and drawn on the edge.
+ *
+ * A slice the user clicked gets a solid edge. A slice a walk inferred gets a
+ * broken edge and a fainter fill, so the two claims never look the same.
+ */
+function paint(image: ImageData, mask: Mask, pane: Pane, colour: string, origin: CutOrigin): void {
   const [red, green, blue] = toBytes(colour);
   const set = (index: number): boolean => mask.data[index] !== 0;
+  const grown = origin === "grown";
+  const fill = grown ? Math.round(FILL_ALPHA * 0.55) : FILL_ALPHA;
 
   for (let y = 0; y < mask.height; y += 1) {
     for (let x = 0; x < mask.width; x += 1) {
@@ -56,12 +63,14 @@ function paint(image: ImageData, mask: Mask, pane: Pane, colour: string): void {
         !set(index + 1) ||
         !set(index - mask.width) ||
         !set(index + mask.width);
+      // The broken edge is a dash of three pixels on and three off.
+      const drawn = edge && (!grown || (x + y) % 6 < 3);
 
       const target = ((pane.view.y + y) * image.width + pane.view.x + x) * 4;
       image.data[target] = red;
       image.data[target + 1] = green;
       image.data[target + 2] = blue;
-      image.data[target + 3] = edge ? 255 : FILL_ALPHA;
+      image.data[target + 3] = drawn ? 255 : fill;
     }
   }
 }
@@ -137,6 +146,7 @@ export default function SegmentOverlay() {
           resampleMask(decodeRle(entry.part.mask), entry.part.frame, cut.frame),
           pane,
           entry.colour,
+          entry.origin,
         );
       }
     }

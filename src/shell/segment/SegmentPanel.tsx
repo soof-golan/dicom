@@ -10,8 +10,10 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { formatBytes } from "../../core/segment/plan.ts";
+import { stopMessage } from "../../core/segment/propagate.ts";
 import {
   canUndo,
+  cutCounts,
   promptCount,
   type PromptCut,
   type SegmentObject,
@@ -158,6 +160,72 @@ function TextPrompt() {
   );
 }
 
+/**
+ * The walk through the slices, and how it went.
+ *
+ * The button is separate from the click on purpose. One walk reads up to 64
+ * slices through the vision encoder, and that must never be the price of a
+ * click that the user is still refining.
+ */
+function GrowControl() {
+  const growing = useSegment((state) => state.growing);
+  const grow = useSegment((state) => state.grow);
+  const stopGrowing = useSegment((state) => state.stopGrowing);
+  const session = useSegment((state) => state.session);
+  const object = session.objects.find((entry) => entry.id === session.activeId);
+  const growth = object?.growth;
+
+  if (growing) {
+    const reach = (growing.done * growing.millimetresPerSlice).toFixed(0);
+    return (
+      <div className="space-y-1">
+        <Bar fraction={Math.min(growing.done / growing.total, 1)} />
+        <p className="flex justify-between font-mono text-[10px] text-neutral-500">
+          <span>growing</span>
+          <span>
+            {growing.done} slices · {reach} mm
+          </span>
+        </p>
+        <button
+          type="button"
+          onClick={stopGrowing}
+          className="w-full rounded border border-neutral-800 px-2 py-1 text-[10px] text-neutral-400 transition-colors hover:border-neutral-600"
+        >
+          Stop
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={grow}
+        disabled={!object}
+        className="w-full rounded border border-neutral-700 px-2 py-1.5 text-[11px] transition-colors hover:border-neutral-500 disabled:opacity-40"
+      >
+        Grow through slices
+      </button>
+      {growth ? (
+        <div className="space-y-0.5 text-[10px] text-neutral-500">
+          <p className="font-mono">
+            {growth.kept} slices grown · {growth.reachMillimetres.toFixed(0)} mm on {growth.plane}
+          </p>
+          <p>Up: {stopMessage(growth.up)}</p>
+          <p>Down: {stopMessage(growth.down)}</p>
+        </div>
+      ) : (
+        <p className="text-[10px] text-neutral-600">
+          The walk starts at the last slice you clicked and steps out on both sides. It stops on its
+          own, and the panel says why. Combine the three series first: the walk needs slices that
+          look alike, and the native step is 3.3 mm against 0.27 mm pixels.
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** One cut of one object, so the user can return to the slice they clicked on. */
 function CutRow({ objectId, cut }: { objectId: string; cut: PromptCut }) {
   const goTo = useSegment((state) => state.goToCut);
@@ -197,6 +265,7 @@ function ObjectRow({ object, active }: { object: SegmentObject; active: boolean 
 
   // Measuring an object walks every mask pixel, so it runs only on a change.
   const size = useMemo(() => objectVolume(object), [object]);
+  const counts = cutCounts(object);
 
   const stopEditing = (keep: boolean): void => {
     if (keep) rename(object.id, draft);
@@ -264,11 +333,19 @@ function ObjectRow({ object, active }: { object: SegmentObject; active: boolean 
         </button>
       </div>
       {active && object.cuts.length > 0 && (
-        <ul className="mt-0.5 space-y-0.5">
-          {object.cuts.map((cut) => (
-            <CutRow key={cut.key} objectId={object.id} cut={cut} />
-          ))}
-        </ul>
+        <>
+          <ul className="mt-0.5 space-y-0.5">
+            {object.cuts
+              .filter((cut) => cut.origin === "user")
+              .map((cut) => (
+                <CutRow key={cut.key} objectId={object.id} cut={cut} />
+              ))}
+          </ul>
+          <p className="pl-4 text-[10px] text-neutral-600">
+            {counts.user} {counts.user === 1 ? "slice" : "slices"} you clicked · {counts.grown} the
+            model inferred
+          </p>
+        </>
       )}
     </li>
   );
@@ -353,6 +430,7 @@ export default function SegmentPanel() {
             </button>
           </div>
 
+          <GrowControl />
           <TextPrompt />
         </>
       )}
