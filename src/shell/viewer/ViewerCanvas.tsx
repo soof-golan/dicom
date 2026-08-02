@@ -304,10 +304,13 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
     store.patchView({
       orbit: {
         ...store.view.orbit,
-        azimuth: drag.azimuth + (event.clientX - drag.startX) * 0.008,
+        // Dragging holds the volume and turns it, the way CAD software does.
+        // The camera moves the opposite way to the pointer, so both signs are
+        // the reverse of the camera angles they set.
+        azimuth: drag.azimuth - (event.clientX - drag.startX) * 0.008,
         elevation: Math.max(
           -limit,
-          Math.min(limit, drag.elevation - (event.clientY - drag.startY) * 0.008),
+          Math.min(limit, drag.elevation + (event.clientY - drag.startY) * 0.008),
         ),
       },
     });

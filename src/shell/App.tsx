@@ -123,12 +123,19 @@ function SeriesList() {
   );
 }
 
+/**
+ * One display control.
+ *
+ * The ends are fixed by the caller and never move with the value. A double
+ * click returns the control to the value the series opened with.
+ */
 function Slider({
   label,
   value,
   min,
   max,
   step,
+  reset,
   onChange,
   format,
 }: {
@@ -137,22 +144,28 @@ function Slider({
   min: number;
   max: number;
   step: number;
+  reset: number;
   onChange: (value: number) => void;
   format?: (value: number) => string;
 }) {
+  const clamped = Math.min(Math.max(value, min), max);
+  const atDefault = Math.abs(value - reset) < step / 2;
   return (
-    <label className="block">
+    <label className="block" title="Double click to restore the starting value">
       <span className="flex justify-between text-[11px] text-neutral-400">
         {label}
-        <span className="font-mono text-neutral-500">{format?.(value) ?? value.toFixed(0)}</span>
+        <span className={atDefault ? "font-mono text-neutral-600" : "font-mono text-sky-300/80"}>
+          {format?.(value) ?? value.toFixed(0)}
+        </span>
       </span>
       <input
         type="range"
         min={min}
         max={max}
         step={step}
-        value={value}
+        value={clamped}
         onChange={(event) => onChange(Number(event.target.value))}
+        onDoubleClick={() => onChange(reset)}
         className="mt-1 w-full accent-sky-400"
       />
     </label>
@@ -161,26 +174,33 @@ function Slider({
 
 function Controls() {
   const view = useStudy((state) => state.view);
+  const defaults = useStudy((state) => state.defaults);
+  const limits = useStudy((state) => state.limits);
   const patch = useStudy((state) => state.patchView);
+  const resetView = useStudy((state) => state.resetView);
   const toggleClip = useStudy((state) => state.toggleClip);
   const flipClip = useStudy((state) => state.flipClip);
+
+  const contrastStep = Math.max(1, Math.round(limits.windowWidth[1] / 400));
 
   return (
     <div className="space-y-4">
       <Slider
         label="Brightness"
         value={view.windowCenter}
-        min={view.windowCenter - view.windowWidth}
-        max={view.windowCenter + view.windowWidth}
-        step={1}
+        min={limits.windowCenter[0]}
+        max={limits.windowCenter[1]}
+        step={contrastStep}
+        reset={defaults.windowCenter}
         onChange={(windowCenter) => patch({ windowCenter })}
       />
       <Slider
         label="Contrast"
         value={view.windowWidth}
-        min={1}
-        max={Math.max(view.windowWidth * 3, 100)}
-        step={1}
+        min={limits.windowWidth[0]}
+        max={limits.windowWidth[1]}
+        step={contrastStep}
+        reset={defaults.windowWidth}
         onChange={(windowWidth) => patch({ windowWidth })}
       />
       <Slider
@@ -189,6 +209,7 @@ function Controls() {
         min={0}
         max={1}
         step={0.01}
+        reset={defaults.tissueMix}
         onChange={(tissueMix) => patch({ tissueMix })}
         format={(v) => `${Math.round(v * 100)}%`}
       />
@@ -198,6 +219,7 @@ function Controls() {
         min={0}
         max={40}
         step={0.5}
+        reset={defaults.slabThickness}
         onChange={(slabThickness) => patch({ slabThickness })}
         format={(v) => (v < 0.1 ? "off" : `${v.toFixed(1)} mm`)}
       />
@@ -207,8 +229,19 @@ function Controls() {
         min={0.2}
         max={12}
         step={0.1}
+        reset={defaults.opacity}
         onChange={(opacity) => patch({ opacity })}
         format={(v) => v.toFixed(1)}
+      />
+      <Slider
+        label="3D threshold"
+        value={view.threshold}
+        min={0}
+        max={0.9}
+        step={0.01}
+        reset={defaults.threshold}
+        onChange={(threshold) => patch({ threshold })}
+        format={(v) => `${Math.round(v * 100)}%`}
       />
 
       <div>
@@ -230,7 +263,7 @@ function Controls() {
               }`}
             >
               {id}
-              {view.clip[id] ? (view.clipFlip[id] ? " ↓" : " ↑") : ""}
+              {view.clip[id] ? (view.clipFlip[id] ? " \u2193" : " \u2191") : ""}
             </button>
           ))}
         </div>
@@ -238,6 +271,14 @@ function Controls() {
           Click to cut, click again to flip. Right-click to clear.
         </p>
       </div>
+
+      <button
+        type="button"
+        onClick={resetView}
+        className="w-full rounded border border-neutral-800 px-2 py-1.5 text-[11px] text-neutral-400 transition-colors hover:border-neutral-600 hover:text-neutral-200"
+      >
+        Restore every setting
+      </button>
     </div>
   );
 }
