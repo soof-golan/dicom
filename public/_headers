@@ -8,8 +8,12 @@
 # --- Applies to every response ---------------------------------------------
 # Replace R2-BUCKET-HOSTNAME.example.com in connect-src with the real public
 # hostname of the R2 bucket. Until then, fetches to R2 will be blocked.
+#
+# huggingface.co and *.hf.co serve the segmentation weights. huggingface.co
+# answers the first request and redirects to a CDN host under hf.co. Remove
+# both entries after the weights move to R2. See docs/segmentation.md.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; worker-src 'self' blob:; child-src 'self' blob:; manifest-src 'self'; connect-src 'self' blob: data: https://R2-BUCKET-HOSTNAME.example.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; worker-src 'self' blob:; child-src 'self' blob:; manifest-src 'self'; connect-src 'self' blob: data: https://R2-BUCKET-HOSTNAME.example.com https://huggingface.co https://*.hf.co; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()

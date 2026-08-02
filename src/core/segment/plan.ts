@@ -13,6 +13,14 @@ export type Backend = "webgpu" | "wasm";
 
 export type ModelId = "sam3-tracker" | "sam2.1-hiera-tiny" | "slimsam-77";
 
+/**
+ * The weight formats that the runtime accepts.
+ *
+ * These names are the ones transformers.js maps to a file suffix. `q8` reads
+ * `*_quantized.onnx`, and `fp32` reads the plain `*.onnx`.
+ */
+export type Dtype = "fp32" | "fp16" | "int8" | "uint8" | "q8" | "q4" | "q4f16" | "bnb4";
+
 /** What the browser reports about itself. */
 export interface Capability {
   readonly hasWebGpu: boolean;
@@ -26,7 +34,7 @@ export interface ModelPlan {
   /** The Hugging Face repo that holds the ONNX graphs. */
   readonly repo: string;
   readonly backend: Backend;
-  readonly encoderDtype: string;
+  readonly encoderDtype: Dtype;
   /**
    * Always `fp32`. The decoder makes the mask logits, and it costs 20 MB.
    * Quantizing it moves a boundary by a pixel or two for no useful saving.
@@ -42,7 +50,7 @@ export interface ModelPlan {
 export interface TextPlan {
   readonly repo: string;
   readonly backend: Backend;
-  readonly dtype: string;
+  readonly dtype: Dtype;
   readonly bytes: number;
   readonly label: string;
 }
@@ -78,7 +86,7 @@ const SLIMSAM: ModelPlan = {
   id: "slimsam-77",
   repo: "Xenova/slimsam-77-uniform",
   backend: "wasm",
-  encoderDtype: "quantized",
+  encoderDtype: "q8",
   decoderDtype: "fp32",
   // vision_encoder_quantized: 8,882,165. decoder: 16,557,892.
   bytes: 25_440_057,

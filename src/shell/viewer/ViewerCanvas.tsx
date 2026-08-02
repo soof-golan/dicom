@@ -16,13 +16,13 @@ const GAP = 2;
 
 export type PaneId = PlaneId | "volume";
 
-interface Pane {
+export interface Pane {
   readonly id: PaneId;
   readonly view: Viewport;
 }
 
 /** A 2x2 grid: three cuts and the 3D view. */
-function layout(width: number, height: number): Pane[] {
+export function layout(width: number, height: number): Pane[] {
   const w = Math.floor((width - GAP) / 2);
   const h = Math.floor((height - GAP) / 2);
   const right = width - w - GAP;

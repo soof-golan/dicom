@@ -3,6 +3,7 @@ import { PLANE_IDS, standardPlane, type PlaneId } from "../core/view/planes.ts";
 import { loadStudy, readDataTransfer, readDevStudy, readFiles } from "./loader/loadStudy.ts";
 import type { StudySource } from "./loader/messages.ts";
 import { pageHref, usePage } from "./routes.ts";
+import { SegmentLayer, SegmentSection } from "./segment/SegmentSection.tsx";
 import { activeSeries, useStudy } from "./store.ts";
 import { Tutorial, useTutorial } from "./Tutorial.tsx";
 import { clearedForNewSeries, resolveDisplay, useDisplayParams } from "./viewState.ts";
@@ -474,6 +475,7 @@ export function App() {
             <Controls />
           </section>
         )}
+        {hasSeries && <SegmentSection />}
         <SidebarFooter onReplayTutorial={tutorial.restart} />
       </aside>
 
@@ -482,6 +484,7 @@ export function App() {
           <Suspense fallback={null}>
             <ViewerCanvas />
             <EdgeLabels />
+            <SegmentLayer />
           </Suspense>
         ) : (
           <Dropzone onFiles={load} />
