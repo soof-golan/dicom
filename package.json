@@ -12,6 +12,7 @@
     "prepare": "vp config"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "nuqs": "^2.8.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
