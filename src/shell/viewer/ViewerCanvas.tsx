@@ -7,6 +7,9 @@ import {
   type PlaneId,
 } from "../../core/view/planes.ts";
 import { activeSeries, useStudy } from "../store.ts";
+import { useStructures } from "../tissue/store.ts";
+import type { StructureResult } from "../tissue/protocol.ts";
+import { createStructureTexture } from "./structureTexture.ts";
 import { gestureFor } from "./interaction.ts";
 import { cubeViewport, VolumeScene, type Viewport } from "./VolumeScene.ts";
 import type { CubeRegion } from "../../core/view/viewcube.ts";
@@ -72,6 +75,7 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
     // happen again when it does. Without this the colors stay single-sequence
     // until the reader clicks another series.
     let uploadedPartnerUid: string | undefined;
+    let uploadedLabels: StructureResult | undefined;
 
     const draw = () => {
       const state = useStudy.getState();
@@ -94,6 +98,16 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
         scene.setVolume(series.volume, state.pair);
         uploadedUid = activeUid;
         uploadedPartnerUid = partner?.seriesInstanceUid;
+        // The labels sit on the pair's own grid, so a series swap keeps them.
+        uploadedLabels = undefined;
+      }
+
+      // The labels are asked for in React, not here. Drawing only uploads what
+      // has already arrived.
+      const labels = useStructures.getState().result;
+      if (labels !== uploadedLabels) {
+        uploadedLabels = labels;
+        scene.setStructures(labels ? createStructureTexture(labels) : undefined);
       }
 
       const panes = layout(width, height);
@@ -129,6 +143,8 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
     };
 
     const unsubscribe = useStudy.subscribe(markDirty);
+    // The worker answers seconds later, and nothing else would redraw then.
+    const unsubscribeLabels = useStructures.subscribe(markDirty);
     const observer = new ResizeObserver(markDirty);
     observer.observe(canvas);
     tick();
@@ -141,6 +157,7 @@ export function ViewerCanvas({ onPanes }: { onPanes?: (panes: Pane[]) => void })
       running = false;
       cancelAnimationFrame(frame);
       unsubscribe();
+      unsubscribeLabels();
       observer.disconnect();
       scene.dispose();
       sceneRef.current = null;

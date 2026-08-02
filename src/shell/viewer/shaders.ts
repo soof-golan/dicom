@@ -11,6 +11,7 @@
  * between them through patient millimeters, which is the one thing they share.
  */
 import { tissueGlsl } from "../../core/tissue/glsl.ts";
+import { structureGlsl } from "../../core/tissue/structureGlsl.ts";
 
 /** Shared code: sampling, the window transform, and the tissue classifier. */
 const COMMON = /* glsl */ `
@@ -44,6 +45,7 @@ uniform vec2 uSignalRange;
 uniform vec2 uCompanionRange;
 
 ${tissueGlsl()}
+${structureGlsl()}
 
 // Texture coordinates for a voxel index. A voxel center sits at index + 0.5.
 vec3 voxelToTexture(vec3 voxel) {
@@ -115,6 +117,13 @@ vec4 tissueAt(vec3 voxel, vec3 patient) {
 vec3 shade(float gray, vec3 voxel, vec3 patient) {
   if (uTissueMix <= 0.0) return vec3(gray);
   vec4 tissue = tissueAt(voxel, patient);
+
+  // Where the CPU named a dark structure, its answer wins. The signal rule
+  // could only say "dark" there, and this says which dark thing. Everywhere
+  // else the label is silent and the signal answer stands.
+  vec4 structure = structureAt(patient);
+  if (structure.a > 0.0) tissue = structure;
+
   // The hue names the tissue and the brightness keeps the anatomy readable. A
   // flat color hides the texture that makes the image worth looking at.
   vec3 colored = tissue.rgb * (0.35 + 0.65 * gray);

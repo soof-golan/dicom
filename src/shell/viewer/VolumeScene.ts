@@ -36,6 +36,7 @@ import type { Vec3 } from "../../core/geometry/vec3.ts";
 import { readSequenceKind, type SequencePair } from "../../core/tissue/sequence.ts";
 import { PLANE_FRAGMENT, PLANE_VERTEX, VOLUME_FRAGMENT, VOLUME_VERTEX } from "./shaders.ts";
 import { createVolumeTexture, type VolumeTexture } from "./volumeTexture.ts";
+import type { StructureTexture } from "./structureTexture.ts";
 import type { Volume } from "../../core/volume/build.ts";
 import { ViewCube } from "./ViewCube.ts";
 import type { CubeRegion } from "../../core/view/viewcube.ts";
@@ -90,6 +91,11 @@ const TISSUE_UNIFORMS = () => ({
   uActiveIsFatSat: { value: 0 },
   uSignalRange: { value: new Vector2(0, 1) },
   uCompanionRange: { value: new Vector2(0, 1) },
+  // The labels that the CPU decided. Absent until the worker answers.
+  uStructures: { value: null },
+  uStructureDims: { value: new Vector3(1, 1, 1) },
+  uPatientToStructure: { value: new Matrix4() },
+  uHasStructures: { value: 0 },
 });
 
 const PLANE_UNIFORMS = () => ({
@@ -171,6 +177,7 @@ export class VolumeScene {
   private readonly volumeMaterial: ShaderMaterial;
 
   private texture?: VolumeTexture;
+  private structures?: StructureTexture;
   private bounds?: Bounds;
   readonly cube = new ViewCube();
 
@@ -296,6 +303,29 @@ export class VolumeScene {
       .multiply(new Matrix4().makeScale(dims.x, dims.y, dims.z));
     this.volumeMesh.matrix.copy(voxelToPatient).multiply(box);
     this.volumeMesh.matrixWorldNeedsUpdate = true;
+  }
+
+  /**
+   * Bind the labels that name dark structures, or clear them.
+   *
+   * The labels sit on their own grid, which need not be the series on screen,
+   * so the shader reaches them through patient millimetres. A sampler that is
+   * never read still has to be complete, so an empty binding keeps the flag at
+   * zero and leaves the old texture in place.
+   */
+  setStructures(labels?: StructureTexture): void {
+    if (this.structures && this.structures !== labels) this.structures.dispose();
+    this.structures = labels;
+
+    for (const material of [this.planeMaterial, this.volumeMaterial]) {
+      const u = material.uniforms;
+      u.uHasStructures!.value = labels ? 1 : 0;
+      if (!labels) continue;
+      u.uStructures!.value = labels.texture;
+      (u.uStructureDims!.value as Vector3).set(...labels.dims);
+      (u.uPatientToStructure!.value as Matrix4).copy(toMatrix4(labels.patientToVoxel));
+      material.needsUpdate = true;
+    }
   }
 
   get volumeBounds(): Bounds | undefined {
@@ -432,6 +462,8 @@ export class VolumeScene {
   dispose(): void {
     this.cube.dispose();
     this.evictExcept([]);
+    this.structures?.dispose();
+    this.structures = undefined;
     this.texture = undefined;
     this.planeMesh.geometry.dispose();
     this.planeMaterial.dispose();
