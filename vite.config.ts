@@ -1,9 +1,10 @@
 import { defineConfig } from "vite-plus";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { devStudy } from "./scripts/dev-study-plugin.ts";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), devStudy()],
   staged: {
     "*": "vp check --fix",
   },

@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dicom-viewer",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "PATH=\"$HOME/.vite-plus/bin:$PATH\" DICOM_DEV_STUDY=\"/Users/soof/Downloads/MRI Right Elbow 31-07-2026\" vp dev --port 5173"
+      ],
+      "port": 5173
+    }
+  ]
+}
