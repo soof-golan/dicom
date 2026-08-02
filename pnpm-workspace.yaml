@@ -1,6 +1,14 @@
 # Build scripts of wrangler, the Cloudflare CLI. Both are first-party.
+#
+# The three that transformers.js brings in stay off. They build native code
+# for Node, and this app runs the models in the browser. onnxruntime-node
+# never loads, and sharp never loads, because the browser build reads images
+# through Canvas.
 allowBuilds:
   esbuild: true
+  onnxruntime-node: false
+  protobufjs: false
+  sharp: false
   workerd: true
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.2.7
