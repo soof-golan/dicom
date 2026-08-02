@@ -1,13 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { PLANE_IDS, standardPlane, type PlaneId } from "../core/view/planes.ts";
 import { loadStudy, readDataTransfer, readDevStudy, readFiles } from "./loader/loadStudy.ts";
 import type { StudySource } from "./loader/messages.ts";
-import { PrivacyPolicy } from "./legal/PrivacyPolicy.tsx";
-import { Terms } from "./legal/Terms.tsx";
 import { pageHref, usePage } from "./routes.ts";
 import { activeSeries, useStudy } from "./store.ts";
 import { Tutorial, useTutorial } from "./Tutorial.tsx";
-import { ViewerCanvas } from "./viewer/ViewerCanvas.tsx";
+
+// three.js is the largest dependency by far, and a reader who has opened no
+// scan does not need it. The legal pages need none of the viewer at all.
+const ViewerCanvas = lazy(async () => ({
+  default: (await import("./viewer/ViewerCanvas.tsx")).ViewerCanvas,
+}));
+const PrivacyPolicy = lazy(async () => ({
+  default: (await import("./legal/PrivacyPolicy.tsx")).PrivacyPolicy,
+}));
+const Terms = lazy(async () => ({ default: (await import("./legal/Terms.tsx")).Terms }));
 
 function useLoader() {
   return useCallback(async (sources: readonly StudySource[]) => {
@@ -367,7 +374,9 @@ function LegalScreen({ page }: { page: "privacy" | "terms" }) {
         >
           &larr; Back to the viewer
         </a>
-        {page === "privacy" ? <PrivacyPolicy /> : <Terms />}
+        <Suspense fallback={<p className="text-sm text-neutral-500">Loading…</p>}>
+          {page === "privacy" ? <PrivacyPolicy /> : <Terms />}
+        </Suspense>
       </div>
     </div>
   );
@@ -424,10 +433,10 @@ export function App() {
 
       <main className="relative min-w-0 flex-1">
         {status === "ready" || hasSeries ? (
-          <>
+          <Suspense fallback={null}>
             <ViewerCanvas />
             <EdgeLabels />
-          </>
+          </Suspense>
         ) : (
           <Dropzone onFiles={load} />
         )}
