@@ -15,6 +15,8 @@ export interface Instance {
   readonly sopInstanceUid: string;
   readonly seriesInstanceUid: string;
   readonly studyInstanceUid: string;
+  /** Series that share this identifier also share a patient coordinate system. */
+  readonly frameOfReferenceUid: string;
   readonly modality: string;
   readonly seriesNumber: number;
   readonly instanceNumber: number;
@@ -78,6 +80,7 @@ export function readInstance(dataSet: DicomDataSet): Instance {
     sopInstanceUid: getString(dataSet, Tag.SopInstanceUid) ?? "",
     seriesInstanceUid: getString(dataSet, Tag.SeriesInstanceUid) ?? "",
     studyInstanceUid: getString(dataSet, Tag.StudyInstanceUid) ?? "",
+    frameOfReferenceUid: getString(dataSet, Tag.FrameOfReferenceUid) ?? "",
     modality: getString(dataSet, Tag.Modality) ?? "OT",
     seriesNumber: getNumber(dataSet, Tag.SeriesNumber) ?? 0,
     instanceNumber: getNumber(dataSet, Tag.InstanceNumber) ?? 0,

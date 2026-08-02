@@ -39,6 +39,8 @@ export interface Volume {
   readonly description: string;
   readonly modality: string;
   readonly seriesInstanceUid: string;
+  /** Series that share this identifier can be compared without registration. */
+  readonly frameOfReferenceUid: string;
   /** Facts that a reader must know before trusting the geometry. */
   readonly warnings: readonly string[];
 }
@@ -207,6 +209,7 @@ export function buildVolume(instances: readonly Instance[]): Volume {
     description: first.seriesDescription,
     modality: first.modality,
     seriesInstanceUid: first.seriesInstanceUid,
+    frameOfReferenceUid: first.frameOfReferenceUid,
     warnings,
   };
 }
