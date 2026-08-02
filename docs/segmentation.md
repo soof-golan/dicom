@@ -68,38 +68,132 @@ Two repos, four weight formats, both providers. The fault is in the export of
 the classification head, not in the quantization and not in the provider.
 CLIPSeg has no classification head, so it has no such node.
 
-### MedSigLIP, and why it is not measured yet
+### MedSigLIP was measured and rejected
 
-CLIPSeg learned from photographs. Its training set holds no MRI, which is the
-likely cause of the low scores on tissue names in section 6. MedSigLIP
+CLIPSeg learned from photographs, and its training set holds no MRI. That is
+the likely cause of the low scores on tissue names in section 6. MedSigLIP
 (`google/medsiglip-448`) learned from medical image and text pairs, and those
-pairs include slices of CT and MRI volumes with their radiology reports.
+pairs include slices of CT and MRI volumes with their radiology reports. So it
+was the obvious model to try.
 
-MedSigLIP cannot replace CLIPSeg on its own. It has no mask decoder. It only
-scores how well a picture and a phrase agree. The composition that works
-needs no training:
+It was exported, quantized and scored against this study on 2026-08-02. **It
+does not work for naming tissue, and it is 894 MB.** It is not adopted.
 
-1. SAM makes candidate masks, from a click or from a grid of points.
-2. Cut the picture to each candidate.
-3. Score each cut against the phrase with MedSigLIP.
-4. Keep the best score.
+MedSigLIP has no mask decoder, so it can never segment. It can only score how
+well a picture and a phrase agree. The composition that would have worked
+needs no training: SAM makes candidate masks, each is cut out, MedSigLIP
+scores each cut against the phrase, the best wins. The scores below are what
+that composition would have run on.
 
-The runtime is ready. transformers.js 4.2.0, the pinned version, already
+#### The model does work, which is why the result can be trusted
+
+A negative result is only worth reading if the harness is right. These three
+checks use the same code path and the same 34 crops, and each has ground
+truth already:
+
+| Check                                | Result       | Chance |
+| ------------------------------------ | ------------ | ------ |
+| Body part: elbow, brain, knee, chest | 34/34 (100%) | 25%    |
+| Modality: MR, CT, a photograph       | 33/34 (97%)  | 33%    |
+| Sequence: T1 against fat-saturated   | 17/34 (50%)  | 50%    |
+
+The model reads a whole picture well. It knows an elbow MRI, and it ranks
+"an MRI of the knee" above "an MRI of the brain", which is the right order.
+It cannot tell T1 from a fat-saturated sequence, which is the first thing a
+reader learns, and which naming a tissue depends on.
+
+#### Naming a tissue: at chance
+
+Crops came from the tissue classifier in `src/core/tissue`, so the label is
+signal-derived ground truth, not a hand-drawn guess. Four classes, four crop
+widths, both sequences, 32 labelled crops. The task is to pick the right one
+of eight tissue concepts.
+
+| Wording                                   | Correct    | Chance |
+| ----------------------------------------- | ---------- | ------ |
+| Single noun, "fat"                        | 3/32 (9%)  | 12%    |
+| Report phrasing, "subcutaneous fat"       | 4/32 (12%) | 12%    |
+| Full sentence, "an MRI slice showing ..." | 1/32 (3%)  | 12%    |
+
+**Report phrasing did not beat single nouns.** That was the hypothesis worth
+testing, and it failed: the mean cosine difference over the four classes is
+-0.0040. The one class where phrasing helped, edema at +0.2593, is explained
+by the next table.
+
+#### The negative control fails
+
+A crop of pure subcutaneous fat, scored against edema wording, must lose to a
+crop of the real bone bruise. It does not.
+
+| Wording             | Mean on fat crops | Mean on edema crops | Separation |
+| ------------------- | ----------------- | ------------------- | ---------- |
+| "edema"             | -0.0595           | -0.0544             | +0.0051    |
+| "bone marrow edema" | +0.2039           | +0.2049             | +0.0010    |
+
+"bone marrow edema" scores about +0.20 on everything. That is a property of
+the phrase, not of the picture.
+
+#### Why: the wording decides the answer
+
+Splitting the score matrix into what the prompt contributes, what the picture
+contributes, and what the two contribute together:
+
+| Source            | Share of the variation |
+| ----------------- | ---------------------- |
+| The wording alone | 74.0%                  |
+| The picture alone | 5.7%                   |
+| The two together  | 20.3%                  |
+
+Only the last row can name a tissue. Removing the per-prompt constant, which
+is the usual fix for a text prior, moves the four-way choice from 25% to 28%
+against a 25% chance. There is nothing to recover.
+
+This is the same failure CLIPSeg shows. CLIPSeg returns a box over most of
+the arm; MedSigLIP returns "the distal biceps tendon" for almost every crop
+wider than 60 mm. Neither reads the tissue.
+
+#### Size and speed, measured
+
+Exported with `torch.onnx.export` at opset 17, quantized with
+`onnxruntime.quantization.quantize_dynamic` to QUInt8.
+
+| Tower  | Parameters | ONNX float32 | ONNX q8      |
+| ------ | ---------- | ------------ | ------------ |
+| Vision | 429 M      | 1714.8 MB    | 442.7 MB     |
+| Text   | 450 M      | 1799.4 MB    | 451.8 MB     |
+| Both   | 879 M      | 3514.2 MB    | **894.5 MB** |
+
+Latency on this machine, CPU only:
+
+| Run             | Image   | Text          |
+| --------------- | ------- | ------------- |
+| PyTorch float32 | 1009 ms | 52 ms/prompt  |
+| onnxruntime q8  | 2769 ms | 125 ms/prompt |
+
+Quantization is not the reason it fails. The q8 scores correlate with the
+float scores at r = 0.909, with a mean absolute difference of 0.031.
+
+Browser load time and WebGPU latency were **not** measured. The model was
+ruled out twice over before that work was worth doing: the scores are at
+chance, and 894.5 MB is about ten times the whole current model payload.
+Cloudflare refuses a single asset above 25 MiB, so the weights would have gone
+to R2 in many parts.
+
+#### If anyone tries again
+
+The runtime side is ready. transformers.js 4.2.0, the pinned version, already
 exports `SiglipModel`, `SiglipTextModel`, `SiglipVisionModel`,
 `SiglipImageProcessor` and `SiglipTokenizer`, so no new dependency is needed.
 
-The weights are not available to this project. On 2026-08-02 the repository
-answered:
+Two traps cost time here, and both are recorded so nobody repeats them:
 
-```
-Access to model google/medsiglip-448 is restricted and you are not in the
-authorized list.
-```
-
-The account is signed in, and the metadata reads `gated: "auto"`. An `auto`
-gate needs no human review: one visit to the model page to accept the Health
-AI Developer Foundations terms opens it. Until an authorized account runs the
-export, there are no numbers, and nothing here must be treated as a result.
+- This checkpoint trained to `logit_scale` 10.03 and `logit_bias` -10.0. The
+  sigmoid probability that SigLIP normally reports therefore cannot pass 0.5
+  even for a perfect match, and reads 0.000 for everything. Google's own model
+  card uses a softmax across the candidate texts. Read the cosine, or the
+  softmax, never the sigmoid.
+- In transformers 4.57, `get_image_features` and `get_text_features` return an
+  output object, not a tensor. Take `.pooler_output`.
 
 Three conditions apply before any MedSigLIP weight is served from our origin,
 because the license is Health AI Developer Foundations and not Apache-2.0:
@@ -108,7 +202,12 @@ because the license is Health AI Developer Foundations and not Apache-2.0:
 - Ship a NOTICE file.
 - Mark each modified file as modified. A quantized export is a modification.
 
-Cloudflare refuses a single asset above 25 MiB, so the weights must go to R2.
+None of those apply today, because no weight is shipped.
+
+What MedSigLIP is good at, on this study, is naming the whole picture: the
+body part and the modality, both near perfect. If the viewer ever needs to
+check that a loaded series is what its description claims, that is the use to
+come back to. It is not segmentation.
 
 ### License
 
@@ -287,6 +386,12 @@ show, such as "skin", work. Tissue names do not. A peak below about 0.5
 means the model found nothing and returned the whole picture.
 
 The panel reports the peak after each search, so a reader can see this.
+
+A model trained on radiology does no better. MedSigLIP names the body part in
+34 crops out of 34, and names the tissue at chance. Section 2 gives the
+measurements. So the limit is not that CLIPSeg learned from photographs. Two
+towers trained to match a whole picture to a whole report do not learn which
+tissue fills a crop, whatever they were trained on.
 
 ### Box and click prompts
 
